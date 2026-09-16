@@ -523,5 +523,41 @@
 <!-- 연출 속도 재기 — ?scene= 으로 들어올 때만 불러온다 (평소에는 요청조차 없다).
      이 줄이 없어서 qa/scene.js 가 내내 실행되지 않았다. -->
 <script>if(new URLSearchParams(location.search).get('scene')){var s=document.createElement('script');s.src='qa/scene.js';document.body.appendChild(s);}</script>
+
+<!-- 방문 통계와 오류 수집 — 허브와 같은 곳으로 모인다.
+     GoatCounter 는 쿠키를 쓰지 않고 개인을 가려내지 않는다. 오류는 메시지·파일·줄만 보낸다. -->
+<script>
+(function () {
+  var APP = "catan";
+
+  // 게임마다 따로 세어지게 이름을 미리 정해 둔다 (워커 게임은 경로가 다 "/" 라서 안 그러면 한 줄로 뭉친다)
+  window.goatcounter = { path: APP };
+  var sc = document.createElement("script");
+  sc.async = true;
+  sc.src = "https://gc.zgo.at/count.js";
+  sc.setAttribute("data-goatcounter", "https://41ways.goatcounter.com/count");
+  document.head.appendChild(sc);
+
+  // 화면에서 터진 오류를 모은다. 한 번 열 때 다섯 건까지만 — 같은 오류가 쏟아져도 한도를 안 태우게.
+  var left = 5;
+  function send(o) {
+    if (left-- <= 0) return;
+    o.app = APP;
+    o.page = location.pathname + location.search;
+    try {
+      navigator.sendBeacon("https://norara-errors.41ways.workers.dev/report", JSON.stringify(o));
+    } catch (e) {}
+  }
+  addEventListener("error", function (e) {
+    if (!e.message) return;                  // 그림·소리 파일이 안 열린 것은 뺀다
+    send({ msg: e.message, src: e.filename, line: e.lineno, col: e.colno,
+           stack: e.error && e.error.stack });
+  });
+  addEventListener("unhandledrejection", function (e) {
+    var r = e.reason;
+    send({ msg: "처리되지 않은 거절: " + ((r && r.message) || r), stack: r && r.stack });
+  });
+})();
+</script>
 </body>
 </html>
