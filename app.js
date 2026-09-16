@@ -251,6 +251,13 @@
     App.state = E().newGame(App.seats.map(function (s) {
       return { id: s.id, name: s.name, bot: s.bot };
     }), Math.floor(Math.random() * 1e9));
+    // 판 수 세기 — 방장(또는 혼자 하기)만 보낸다. 참가자도 보내면 한 판이 인원수만큼 세어진다.
+    App.statAt = Date.now();
+    App.statOver = false;
+    if (App.mode !== 'client' && window.norara) {
+      norara.ev('start', { n: App.seats.filter(function (s) { return !s.bot; }).length });
+    }
+
     App.build = null; App.discardSel = [];
     App.lastLogId = undefined; App.feed = []; App.feedBusy = false;
     App.seenBuilt = {}; App.confettiDone = false; App.orderSeen = {};
@@ -3217,6 +3224,15 @@
     $('bigNews').classList.add('hidden');
     App.feed.length = 0;
     if (!App.confettiDone) { App.confettiDone = true; confetti(); }
+    // 판 하나에 한 번만 — 이 화면은 다시 그릴 때마다 불린다
+    if (App.mode !== 'client' && !App.statOver && window.norara) {
+      App.statOver = true;
+      norara.ev('end', {
+        n: App.seats.filter(function (s) { return !s.bot; }).length,
+        sec: Math.round((Date.now() - (App.statAt || Date.now())) / 1000)
+      });
+    }
+
     var w = v.winner ? playerIn(v, v.winner) : null;
     var title = $('overTitle');
     title.textContent = w ? w.name + ' 승리!' : '판이 끝났습니다';
