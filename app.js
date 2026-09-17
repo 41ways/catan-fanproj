@@ -3554,7 +3554,7 @@
   $('btnPlay').onclick = function () { show('home'); };
   $('btnBack').onclick = function () { show('title'); };
 
-  // 테마 — 라이트가 기본, 한 번 고르면 기억한다
+  // 테마 — 고른 적 없으면 기기 설정을 따르고, 한 번 고르면 기억한다
   function applyTheme(dark) {
     document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
     $('themeToggle').checked = dark;
@@ -3567,7 +3567,10 @@
   (function () {
     var saved = null;
     try { saved = localStorage.getItem('catan.dark'); } catch (e) {}
-    applyTheme(saved === '1');
+    if (saved === '1' || saved === '0') { applyTheme(saved === '1'); return; }
+    var dark = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches;
+    applyTheme(!!dark);
+    try { localStorage.removeItem('catan.dark'); } catch (e) {}   // 고른 것이 아니므로 기억하지 않는다
   })();
   $('themeToggle').onchange = function () { applyTheme($('themeToggle').checked); };
 
