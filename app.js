@@ -40,6 +40,8 @@
   };
 
   function show(which) {
+    // 판 화면을 벗어나면 "지금 판 중"에서 뺀다
+    if (which !== 'game' && window.norara && norara.live) norara.live(false);
     ['title', 'home', 'lobby', 'game'].forEach(function (id) {
       $(id).classList.toggle('hidden', id !== which);
     });
@@ -276,6 +278,8 @@
   }
 
   function applyView(v) {
+    // 지금 판 중인지 — 방장도 참가자도 알린다(판 수는 방장만 센다)
+    if (window.norara && norara.live) norara.live(v.phase !== 'over');
     var prev = App.view;
     // 순서 정하기에 들어서면 무엇을 하는 단계인지 먼저 크게 알린다
     if (v.phase === 'order' && (!prev || prev.phase !== 'order')) {

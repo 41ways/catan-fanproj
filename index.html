@@ -519,7 +519,7 @@
 <script src="ck.js?v=813caeb1"></script>
 <script src="ck-ai.js?v=d998bdfa"></script>
 <script src="net.js?v=46de61a8"></script>
-<script src="app.js?v=ba925c28"></script>
+<script src="app.js?v=ffa38e45"></script>
 <!-- 연출 속도 재기 — ?scene= 으로 들어올 때만 불러온다 (평소에는 요청조차 없다).
      이 줄이 없어서 qa/scene.js 가 내내 실행되지 않았다. -->
 <script>if(new URLSearchParams(location.search).get('scene')){var s=document.createElement('script');s.src='qa/scene.js';document.body.appendChild(s);}</script>
@@ -540,6 +540,23 @@
 
   // 판 수·인원·걸린 시간 — 게임 코드에서 norara.ev("start", { n: 인원 }) 처럼 부른다.
   // 날짜·게임·이름으로 묶어 더하기만 하므로 한 판에 한 줄씩 쌓이지 않는다.
+  // 지금 누가 있나 — 화면이 보이는 동안 1분에 한 번 "여기 있음"을 보낸다. 판 중인지(play)
+  // 화면만 보는지(look)를 같이 싣는다. 탭마다 무작위 번호 하나뿐, 개인을 가려낼 정보는 없다.
+  var sid = (function () {
+    try {
+      var s = sessionStorage.getItem("norara.sid");
+      if (!s) { s = Math.random().toString(36).slice(2, 12) + Date.now().toString(36); sessionStorage.setItem("norara.sid", s); }
+      return s;
+    } catch (e) { return Math.random().toString(36).slice(2, 14); }
+  })();
+  var playing = false;
+  function beat(st) {
+    try {
+      navigator.sendBeacon("https://norara-errors.41ways.workers.dev/beat",
+        JSON.stringify({ app: APP, sid: sid, st: st || (playing ? "play" : "look") }));
+    } catch (e) {}
+  }
+
   window.norara = {
     ev: function (name, o) {
       o = o || {};
@@ -548,8 +565,24 @@
       try {
         navigator.sendBeacon("https://norara-errors.41ways.workers.dev/ev", JSON.stringify(o));
       } catch (e) {}
+      if (name === "start") window.norara.live(true);   // 판 시작·끝은 "지금" 칸에도 바로 반영
+      if (name === "end") window.norara.live(false);
+    },
+    // 판 중인지 알린다. 방장만 판 수를 세는 온라인 게임도, 참가자는 이걸로 "판 중"에 잡힌다
+    live: function (on) {
+      on = !!on;
+      if (on === playing) return;
+      playing = on;
+      if (document.visibilityState === "visible") beat();
     }
   };
+
+  setTimeout(function () { if (document.visibilityState === "visible") beat(); }, 2000);
+  setInterval(function () { if (document.visibilityState === "visible") beat(); }, 60000);
+  document.addEventListener("visibilitychange", function () {
+    beat(document.visibilityState === "hidden" ? "gone" : null);   // 숨기면 바로 빠지고, 돌아오면 다시 잡힌다
+  });
+  addEventListener("pagehide", function () { beat("gone"); });
 
   // 얼마나 머물렀는지 — 탭을 덮거나 닫을 때 한 번만. pagehide 만으로는 폰에서 자주 놓친다.
   var came = Date.now(), told = false;
