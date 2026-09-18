@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hahmlet:wght@400;500;600;700&family=Song+Myung&display=swap">
-<link rel="stylesheet" href="style.css?v=427c17ec">
+<link rel="stylesheet" href="style.css?v=155a0d72">
 </head>
 <body>
 
@@ -513,13 +513,25 @@
   </div>
 </div>
 
+<!-- 같은 방 사람끼리 하는 채팅 — 혼자 하기(봇과)에서는 뜨지 않는다. 판 중에는 단추가 판 왼쪽 아래로 옮겨 간다 -->
+<button id="chatBtn" class="chat-btn" type="button" hidden aria-label="채팅 열기">💬<span class="chat-n" id="chatN" hidden></span></button>
+<div id="chatPeek" class="chat-peek" hidden role="status" aria-live="polite"></div>
+<section id="chat" class="chat" hidden aria-label="채팅">
+  <header class="chat-head"><b>채팅</b><span class="chat-sub" id="chatWho"></span><button class="chat-x" id="chatX" type="button" aria-label="닫기">✕</button></header>
+  <div class="chat-log" id="chatLog"></div>
+  <form class="chat-in" id="chatForm">
+    <input id="chatText" maxlength="200" placeholder="같은 방 사람들에게" autocomplete="off">
+    <button type="submit" class="primary">보내기</button>
+  </form>
+</section>
+
 <script src="vendor/peerjs.min.js?v=ad5d8870"></script>
 <script src="rules.js?v=bbd617fd"></script>
 <script src="ai.js?v=7542adcb"></script>
 <script src="ck.js?v=813caeb1"></script>
 <script src="ck-ai.js?v=d998bdfa"></script>
-<script src="net.js?v=46de61a8"></script>
-<script src="app.js?v=ffa38e45"></script>
+<script src="net.js?v=2a924b66"></script>
+<script src="app.js?v=a0b0214e"></script>
 <!-- 연출 속도 재기 — ?scene= 으로 들어올 때만 불러온다 (평소에는 요청조차 없다).
      이 줄이 없어서 qa/scene.js 가 내내 실행되지 않았다. -->
 <script>if(new URLSearchParams(location.search).get('scene')){var s=document.createElement('script');s.src='qa/scene.js';document.body.appendChild(s);}</script>

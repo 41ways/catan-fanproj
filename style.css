@@ -1742,3 +1742,96 @@ html, body { overflow-x: hidden; }
 .edgePick { stroke: #ff6a5c; }
 .pickDot { fill: #ffd36b; }
 @media (prefers-reduced-motion: reduce) { .hexPick { animation: none; } }
+
+
+/* ==================== 채팅 ====================
+   같은 방 사람끼리 하는 잡담. 대기실에서는 화면 오른쪽 아래, 판 중에는 판 왼쪽 아래
+   (확대 단추 맞은편)에 접어 둔다. 오른쪽 아래 구석에 띄우면 거래·건설 판을 덮는다. */
+.chat-btn {
+  position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 45;
+  width: 48px; height: 48px; border-radius: 50%; padding: 0;
+  font-size: 20px; line-height: 1;
+  border: 1px solid var(--line); background: var(--panel2); color: var(--ink);
+  box-shadow: var(--shadow);
+}
+.chat-n {
+  position: absolute; top: -3px; right: -3px;
+  min-width: 18px; height: 18px; border-radius: 999px; padding: 0 5px;
+  font-size: 11px; font-weight: 800; line-height: 18px;
+  background: var(--bad); color: var(--btnInk);
+}
+.chat-n.pop { animation: chatPop .5s cubic-bezier(.3,1.7,.5,1); }
+@keyframes chatPop { from { transform: scale(.3); } }
+/* 접힌 채팅에 새 말이 오면 버튼 옆에 잠깐 띄우는 말풍선. 누르면 채팅이 열린다. */
+.chat-peek {
+  position: fixed; right: 74px; bottom: calc(21px + env(safe-area-inset-bottom)); z-index: 45;
+  max-width: min(260px, calc(100vw - 96px));
+  padding: 8px 12px; border-radius: 13px 13px 4px 13px;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  font-size: 13px; line-height: 1.45; cursor: pointer; word-break: break-word;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  animation: chatPeekIn .2s ease-out; transition: opacity .25s, transform .25s;
+}
+.chat-peek b { color: var(--dim); font-weight: 700; margin-right: 6px; }
+.chat-peek.bye { opacity: 0; transform: translateX(6px); }
+@keyframes chatPeekIn { from { opacity: 0; transform: translateX(8px); } }
+/* 판 중 — 판 왼쪽 아래 모서리. 확대 단추와 같은 층이라 창·안내가 뜨면 그 아래로 깔린다. */
+.boardBox > .chat-btn {
+  position: absolute; left: 8px; right: auto; bottom: 8px; z-index: 5;
+  width: 40px; height: 40px; font-size: 18px;
+}
+.boardBox > .chat-peek {
+  position: absolute; left: 56px; right: auto; bottom: 10px; z-index: 5;
+  max-width: min(300px, calc(100% - 112px));      /* 오른쪽 확대 단추까지는 가지 않는다 */
+  border-radius: 13px 13px 13px 4px; animation-name: chatPeekInL;
+}
+.boardBox > .chat-peek.bye { transform: translateX(-6px); }
+@keyframes chatPeekInL { from { opacity: 0; transform: translateX(-8px); } }
+/* 폰에서는 판이 좁아 말풍선이 땅을 덮는다. 맨 위(사람 목록 자리)에 잠깐 띄운다 — 조작 판은 아래에 있다. */
+@media (max-width: 560px) {
+  .chat-peek, .boardBox > .chat-peek {
+    position: fixed; top: calc(8px + env(safe-area-inset-top)); bottom: auto; left: 12px; right: 12px;
+    max-width: none; border-radius: 13px; z-index: 44; animation-name: chatPeekDown;
+  }
+  .chat-peek.bye, .boardBox > .chat-peek.bye { transform: translateY(-6px); }
+}
+@keyframes chatPeekDown { from { opacity: 0; transform: translateY(-8px); } }
+@media (prefers-reduced-motion: reduce) { .chat-peek, .chat-n.pop { animation: none; transition: none; } }
+/* hidden 속성은 브라우저 기본 display:none 이라, 아래처럼 display 를 선언한 요소에서는
+   밀려서 무시된다. 그러면 채팅창이 첫 화면부터 떠 있고 ✕로도 닫히지 않는다. */
+.chat[hidden], .chat-peek[hidden], .chat-btn[hidden], .chat-n[hidden] { display: none; }
+.chat {
+  position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 46;
+  width: min(320px, calc(100vw - 32px)); height: min(380px, 60vh);
+  display: flex; flex-direction: column; overflow: hidden;
+  border-radius: 14px; background: var(--panel); border: 1px solid var(--line);
+  box-shadow: var(--shadow), 0 24px 54px -18px rgba(0,0,0,.55);
+}
+/* 넓은 화면의 판 중에는 단추 바로 위에 연다(자리는 app.js 가 단추 위치로 잡는다) */
+.chat.onBoard { right: auto; }
+.chat-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink);
+}
+.chat-head b { color: var(--gold); }
+.chat-sub { color: var(--faint); font-size: 11.5px; }
+.chat-x {
+  margin-left: auto; border: 0; background: none; box-shadow: none;
+  color: var(--faint); font-size: 15px; line-height: 1; padding: 2px 4px; width: auto;
+}
+.chat-log { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.chat-msg { font-size: 13px; line-height: 1.5; color: var(--ink); word-break: break-word; margin: 0; }
+.chat-msg b { color: var(--faint); font-weight: 700; margin-right: 5px; }
+.chat-msg.mine b { color: var(--gold); }
+.chat-log:empty::before { content: '아직 아무 말도 없습니다'; color: var(--faint); font-size: 12px; opacity: .75; }
+.chat-in { display: flex; gap: 6px; padding: 9px 10px; border-top: 1px solid var(--line); }
+.chat-in input { flex: 1; min-width: 0; font-size: 16px; padding: 8px 10px; margin: 0; }   /* 16px 밑이면 아이폰이 확대해 버린다 */
+.chat-in button { width: auto; margin: 0; padding: 8px 12px; font-size: 13px; }
+/* 좁은 화면에서 아래에 두면 손패·조작 판을 덮는다. 위로 올린다. */
+@media (max-width: 560px) {
+  .chat, .chat.onBoard {
+    top: calc(8px + env(safe-area-inset-top)); bottom: auto; height: min(46vh, 330px);
+    left: 12px; right: 12px; width: auto;
+  }
+}

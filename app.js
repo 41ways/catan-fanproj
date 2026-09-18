@@ -47,6 +47,9 @@
     });
     if (which === 'title') replayTitleIntro();
     if (which === 'game') { initZoom(); initLogFold(); }
+    // 방 밖에서는 채팅이 갈 곳이 없다
+    if (which === 'title' || which === 'home') { $('chatBtn').hidden = true; $('chat').hidden = true; chatPeekOff(); }
+    chatDock(which === 'game');
   }
 
   // 타이틀로 돌아올 때마다 등장 연출을 처음부터 다시 돌린다
@@ -87,6 +90,13 @@
   function EUN(w) { return w + (hasJong(w) ? '은' : '는'); }
   function WA(w) { return w + (hasJong(w) ? '과' : '와'); }
   function EURO(w) { return w + (!hasJong(w) || jongIs(w, 8) ? '로' : '으로'); }
+
+  /* 남이 정한 값(이름 등)을 innerHTML 에 넣을 때는 반드시 이걸 거친다 */
+  function esc(t) {
+    return String(t == null ? '' : t).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -3385,6 +3395,7 @@
   /* ---------------- 대기실 ---------------- */
 
   function renderSeats(seats, canControl) {
+    syncChatVisible(seats);         // 대기실에서도 채팅이 되어야 한다
     var box = $('seats');
     box.innerHTML = '';
     seats.forEach(function (s, i) {
@@ -3408,6 +3419,7 @@
   /* ---------------- 방장 / 참가자 ---------------- */
 
   function beHost() {
+    chatReset();                               // 전 방에서 오간 말을 새 방에 들고 가지 않는다
     App.mode = 'host'; App.me = 'host';
     App.seats = [{ id: 'host', name: myName(), bot: false }];
     App.net = new Net();
@@ -3421,6 +3433,7 @@
     App.net.on.join = function (pid, name) {
       if (App.started || App.seats.length >= 4) {
         App.net.toPlayer(pid, { t: 'err', msg: App.started ? '이미 시작된 방입니다.' : '자리가 찼습니다.' });
+        App.net.kick(pid);                         // 붙여 두면 판 화면과 채팅을 계속 받는다
         return;
       }
       var base = name, n = 2;
@@ -3434,34 +3447,49 @@
       if (!seat) return;
       App.seats = App.seats.filter(function (s) { return s.id !== pid; });
       // 확장판이면 확장판 엔진으로 — 기본판 dropPlayer 가 확장판 상태를 읽다 던져 모든 화면이 멈췄다
-      if (App.started && App.state) { E().dropPlayer(App.state, pid); pushViews(); }
+      if (App.started && App.state) {
+        E().dropPlayer(App.state, pid); pushViews();
+        // 판 중에도 자리 목록을 새로 돌린다 — 참가자는 이걸로 사람 수를 세어 채팅을 거둔다
+        syncChatVisible(App.seats); broadcastLobby();
+      }
       else { renderSeats(App.seats, true); broadcastLobby(); }
       toast(seat.name + ' 나감');
     };
     App.net.on.data = function (pid, msg) {
       if (msg.t === 'act' && App.started) doAction(pid, msg.action, msg.args || []);
+      else if (msg.t === 'chat') relayChat(pid, msg.text);
     };
     App.net.host();
   }
 
   function beClient(code) {
+    chatReset();                               // 전 방에서 오간 말을 새 방에 들고 가지 않는다
     App.mode = 'client';
     App.net = new Net();
     App.net.on.status = toast;
     App.net.on.error = function (m) { toast(m); show('home'); App.net.close(); };
     App.net.on.open = function (c) {
+      // 방장은 나를 내 연결 id 로 부른다. 판이 시작되기 전에도 알고 있어야
+      // 대기실에서 내가 친 채팅을 내 것으로 알아본다(안 그러면 남의 말처럼 보이고 알림까지 센다).
+      if (App.net.peer && App.net.peer.id) App.me = App.net.peer.id;
       $('roomCode').textContent = c;
       $('lobbyHint').textContent = '방장이 시작하기를 기다리는 중…';
       show('lobby'); renderSeats([], false);
     };
     App.net.on.data = function (_, msg) {
-      if (msg.t === 'lobby') renderSeats(msg.seats, false);
+      if (msg.t === 'lobby') {
+        // 참가자는 자리 목록을 여기서만 받는다. 기억해 두지 않으면
+        // 판이 시작된 뒤 사람 수를 셀 수 없어 채팅이 사라져 버린다.
+        App.seats = msg.seats || [];
+        renderSeats(App.seats, false);
+      }
       else if (msg.t === 'view') {
         App.me = msg.view.me;
         App.ext = msg.view.ext === 'ck';
         if ($('game').classList.contains('hidden')) { show('game'); startIntro(); }
         applyView(msg.view);
-      } else if (msg.t === 'err') toast(msg.msg);
+      } else if (msg.t === 'chat') addChat(msg.name, msg.text, msg.from === App.me);
+      else if (msg.t === 'err') toast(msg.msg);
     };
     App.net.join(code, myName());
   }
@@ -3582,6 +3610,145 @@
   // 저장소가 막힌 브라우저(사생활 보호 모드 등)에서는 localStorage 가 던진다 — 그 뒤 스크립트가 통째로 멈추지 않게
   try { $('name').value = localStorage.getItem('catan.name') || ''; } catch (e) {}
   $('name').addEventListener('change', function () { try { localStorage.setItem('catan.name', myName()); } catch (e) {} });
+
+  /* ---------------- 채팅 ----------------
+     같은 방 사람끼리만 오간다. 판정과는 무관하고 어디에도 저장되지 않는다.
+     방장이 받아서 모두에게 그대로 넘겨 준다. 혼자 하기(봇과)에서는 아예 뜨지 않는다.
+     판 중에는 단추를 판 왼쪽 아래(확대 단추 맞은편)에 붙인다 — 화면 구석에 띄우면 조작 판을 덮는다. */
+
+  var chatUnread = 0, chatLast = {};      // 도배 방지는 사람마다 따로 센다
+  /** 새 방에 들어오면 채팅을 비운다. 안 그러면 전 방에서 오간 말이 새 방 채팅창에 그대로 남는다. */
+  function chatReset() {
+    $('chatLog').textContent = '';
+    $('chat').hidden = true;
+    chatUnread = 0; chatLast = {}; chatBadge(); chatPeekOff();
+    chatAway = 0; chatTitle();
+  }
+  function chatSeatName(pid) {
+    for (var i = 0; i < App.seats.length; i++) if (App.seats[i].id === pid) return App.seats[i].name;
+    return null;
+  }
+  function relayChat(pid, text) {
+    text = String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!text) return;
+    var name = chatSeatName(pid);
+    if (name === null) return;             // 자리가 없는 연결(거절당한 참가자 등)의 말은 흘리지 않는다
+    var now = Date.now();
+    // 한 사람이 몰아치는 것만 막는다. 전체를 하나로 세면
+    // 두 사람이 동시에 말할 때 한쪽 말이 소리 없이 사라진다.
+    if (now - (chatLast[pid] || 0) < 350) return;
+    chatLast[pid] = now;
+    var out = { t: 'chat', from: pid, name: name, text: text };
+    App.net.broadcast(function () { return out; });
+    addChat(out.name, text, pid === App.me);
+  }
+  function chatSend(text) {
+    if (!App.net) return;
+    if (App.mode === 'client') App.net.toHost({ t: 'chat', text: text });
+    else relayChat(App.me, text);
+  }
+  /** 판 중이면 단추와 말풍선을 판 안으로, 대기실이면 화면 구석으로 옮긴다 */
+  function chatDock(inGame) {
+    var home = inGame ? $('boardBox') : document.body;
+    ['chatBtn', 'chatPeek'].forEach(function (id) {
+      var n = $(id);
+      if (n && n.parentNode !== home) home.appendChild(n);
+    });
+    $('chat').classList.toggle('onBoard', !!inGame);
+    chatPlace();
+  }
+  /** 넓은 화면의 판 중에는 채팅창을 단추 바로 위에 연다 — 오른쪽 조작 판을 덮지 않게 */
+  function chatPlace() {
+    var c = $('chat');
+    c.style.left = c.style.bottom = c.style.height = '';
+    if (!c.classList.contains('onBoard') || c.hidden || window.innerWidth <= 560) return;
+    var r = $('chatBtn').getBoundingClientRect();
+    if (!r.width) return;
+    c.style.left = Math.max(12, r.left) + 'px';
+    c.style.bottom = Math.round(window.innerHeight - r.top + 8) + 'px';
+    c.style.height = Math.max(200, Math.min(380, r.top - 20)) + 'px';
+  }
+  window.addEventListener('resize', chatPlace);
+  function chatOpen(on) {
+    $('chat').hidden = !on;
+    if (!on) return;
+    chatPlace();
+    chatUnread = 0; chatBadge(); chatPeekOff();
+    $('chatText').focus();
+    var log = $('chatLog'); log.scrollTop = log.scrollHeight;
+  }
+  function addChat(name, text, mine) {
+    var log = $('chatLog');
+    var d = el('p', 'chat-msg' + (mine ? ' mine' : ''));
+    d.innerHTML = '<b>' + esc(name) + '</b> ' + esc(text);
+    log.appendChild(d);
+    while (log.children.length > 60) log.removeChild(log.firstChild);
+    log.scrollTop = log.scrollHeight;
+    if (mine) return;
+    if ($('chat').hidden) { chatUnread++; chatBadge(); chatPeek(name, text); }
+    if (document.hidden || !document.hasFocus()) { chatAway++; chatTitle(); }
+  }
+
+  /* 접어 둔 동안 온 말은 세 군데로 알린다 — 버튼의 빨간 숫자(늘 때마다 통 튄다),
+     버튼 옆 말풍선(읽을 만큼 떠 있다 사라진다), 다른 탭·창에 가 있으면 탭 제목 앞의 (n). */
+  var chatAway = 0, chatPeekT = 0, chatTitle0 = document.title;
+  function chatBadge() {
+    var n = $('chatN');
+    n.textContent = chatUnread > 99 ? '99+' : String(chatUnread);
+    n.hidden = !chatUnread;
+    $('chatBtn').setAttribute('aria-label', chatUnread ? '채팅 열기 — 안 읽은 말 ' + chatUnread + '개' : '채팅 열기');
+    if (!chatUnread) return;
+    n.classList.remove('pop'); void n.offsetWidth; n.classList.add('pop');
+  }
+  function chatPeek(name, text) {
+    if ($('chatBtn').hidden) return;
+    var p = $('chatPeek');
+    p.innerHTML = '<b>' + esc(name) + '</b>' + esc(text);
+    p.classList.remove('bye'); p.hidden = false;
+    p.style.animation = 'none'; void p.offsetWidth; p.style.animation = '';
+    clearTimeout(chatPeekT);
+    chatPeekT = setTimeout(function () {
+      p.classList.add('bye');
+      chatPeekT = setTimeout(chatPeekOff, 260);
+    }, Math.min(6000, Math.max(3000, 1200 + 70 * text.length)));
+  }
+  function chatPeekOff() {
+    clearTimeout(chatPeekT);
+    var p = $('chatPeek'); p.hidden = true; p.classList.remove('bye');
+  }
+  function chatTitle() {
+    document.title = (chatAway ? '(' + (chatAway > 99 ? '99+' : chatAway) + ') ' : '') + chatTitle0;
+  }
+  function chatBack() {
+    if (chatAway && !document.hidden && document.hasFocus()) { chatAway = 0; chatTitle(); }
+  }
+  document.addEventListener('visibilitychange', chatBack);
+  window.addEventListener('focus', chatBack);
+  /** 사람이 나 말고 또 있을 때만 채팅을 내놓는다 */
+  function syncChatVisible(list) {
+    var seats = list || App.seats || [];
+    var humans = 0;
+    seats.forEach(function (st) { if (!st.bot) humans++; });
+    var on = App.mode !== 'solo' && humans > 1;
+    $('chatBtn').hidden = !on;
+    if (!on) { $('chat').hidden = true; chatPeekOff(); }
+    else $('chatWho').textContent = humans + '명';
+  }
+  // 판 위 단추다 — 누를 때 판 끌기·확대가 같이 잡히지 않게 막는다
+  ['chatBtn', 'chatPeek'].forEach(function (id) {
+    $(id).addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+    $(id).addEventListener('wheel', function (e) { e.stopPropagation(); }, { passive: true });
+  });
+  $('chatBtn').onclick = function () { chatOpen($('chat').hidden); };
+  $('chatPeek').onclick = function () { chatOpen(true); };
+  $('chatX').onclick = function () { chatOpen(false); };
+  $('chatForm').onsubmit = function (e) {
+    e.preventDefault();
+    var box = $('chatText'), text = box.value.trim();
+    box.value = '';
+    if (text) chatSend(text);
+  };
+  $('chatText').onkeydown = function (e) { if (e.key === 'Escape') chatOpen(false); };
 
   App.readLine = readLine;
   App.act = act; App.doAction = doAction; App.pushViews = pushViews; App.render = render;

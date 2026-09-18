@@ -197,6 +197,13 @@
     }
   };
 
+  /** 방장이 받지 않기로 한 참가자를 끊는다 — 붙어 있으면 판 화면과 채팅을 계속 받는다 */
+  Net.prototype.kick = function (pid) {
+    var c = this.conns[pid];
+    delete this.conns[pid];
+    if (c) setTimeout(function () { try { c.close(); } catch (e) {} }, 400);   // 거절 사유가 먼저 닿게
+  };
+
   Net.prototype.close = function () {
     if (this.watch) { clearInterval(this.watch); this.watch = null; }
     try { if (this.peer) this.peer.destroy(); } catch (e) {}
