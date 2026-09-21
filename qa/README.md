@@ -1,10 +1,11 @@
 # 돌려 보고 확인하는 도구
 
 눈으로 훑는 대신 **실제로 한 판을 끝까지 돌려서** 확인한다.
-`index.html` 에 `<script src="qa/scene.js"></script>` 를 임시로 넣고 로컬 서버를 띄운 뒤 쓴다.
+화면 쪽 조각(`scene.js`)은 `public/qa/` 에 있고 `?scene=` 으로 들어올 때만 불러온다. 혼자 하기만 쓰므로
+판은 브라우저에서 돈다(서버는 화면 파일을 내주기만 한다).
 
 ```sh
-python3 -m http.server 8899        # 프로젝트 폴더에서
+PORT=8896 node server.js           # 프로젝트 폴더에서
 sh qa/run.sh play base 3           # 기본판 3판을 끝까지 — JS 오류·미완주 확인
 sh qa/run.sh pace ck               # 확장판 — 안내가 몇 초씩 떠 있었는지
 ```

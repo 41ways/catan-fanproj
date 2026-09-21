@@ -1,0 +1,19 @@
+{
+  "name": "catan",
+  "version": "2.0.0",
+  "private": true,
+  "description": "카탄 — 자원을 모아 마을과 도시를 짓는 온라인 보드게임 (기본판 · 도시와 기사)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node rules.test.js && node ck.test.js && node ai.test.js && node test/flow.js",
+    "smoke": "node test/smoke.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -10,6 +10,8 @@
   --btnInk: #fff6ee;
   --shadow: 0 2px 10px rgba(80,60,25,0.10);
   --wood0: #c9a06a; --wood1: #9c7040;
+  --rock0: #8c7458; --rock1: #4e3d2c; --rock2: #241a12; --sand: #eadcb6;
+  --seaIn: #9ec6e0; --seaMid: #6f9cc0; --seaOut: #47709a;
   --paper: #f7efdc; --paper2: #efe4c9; --paperLine: #cdb98d;
   --display: "Hahmlet", "Nanum Myeongjo", "Apple Myungjo", Georgia, serif;      /* 옛 활자 — 표제와 버튼 */
   --serif: "Song Myung", "Nanum Myeongjo", "Apple Myungjo", Georgia, serif;     /* 옛 활자 — 부제와 설명 */
@@ -23,6 +25,8 @@
   --btnInk: #221a08;
   --shadow: 0 2px 12px rgba(0,0,0,0.35);
   --wood0: #4a3423; --wood1: #22170f;
+  --rock0: #4a3e30; --rock1: #2a2118; --rock2: #12100c; --sand: #7a6a4a;
+  --seaIn: #2c3d57; --seaMid: #1f2c40; --seaOut: #131b28;
   --paper: #232833; --paper2: #1b202a; --paperLine: #3a4152;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -276,8 +280,31 @@ h1 { margin: 10px 0 0; font-size: 40px; letter-spacing: 0.02em; }
 #board { width: 100%; height: 100%; max-height: 66dvh; transform-origin: center center; will-change: transform; }
 
 /* 판 */
-.hex { stroke: #0b0e14; stroke-width: 1.5; }
+.hex { stroke: #191309; stroke-width: 0.8; }
 .seaRing { fill: var(--sea); stroke: var(--seaLine); stroke-width: 2; }
+.seaRing.deep { fill: url(#seaDeep); }
+.sea0 { stop-color: var(--seaIn); }
+.sea1 { stop-color: var(--seaMid); }
+.sea2 { stop-color: var(--seaOut); }
+
+/* 섬의 두께 — 평평한 그림이 아니라 물 위에 얹힌 판때기로 보이게 */
+.rock0 { stop-color: var(--rock0); }
+.rock1 { stop-color: var(--rock1); }
+.rock2 { stop-color: var(--rock2); }
+.isleCast polygon { fill: #0b0e14; opacity: 0.4; }
+.isleCast, .isleFoam, .isleRock, .tileSides { pointer-events: none; }
+.isleFoam polygon { fill: none; stroke: var(--sand); stroke-width: 11; stroke-linejoin: round; opacity: 0.42; }
+.strata { fill: none; stroke: #1c1108; stroke-width: 1.5; opacity: 0.18; }
+.hexSide { stroke: none; }
+.hexSideLit { fill: url(#wallShade); stroke: none; }
+.hexLip { fill: none; stroke: #fff; stroke-opacity: 0.26; stroke-width: 2.4; stroke-linejoin: round; pointer-events: none; }
+.hexDip { fill: none; stroke: #000; stroke-opacity: 0.24; stroke-width: 2.6; stroke-linejoin: round; pointer-events: none; }
+.hexSide.s-forest { fill: #1b3826; }
+.hexSide.s-pasture { fill: #47632f; }
+.hexSide.s-fields { fill: #8a6522; }
+.hexSide.s-hills { fill: #6d3f23; }
+.hexSide.s-mountains { fill: #49505c; }
+.hexSide.s-desert { fill: #7d6d50; }
 .hex.t-forest { fill: #2e5d3f; }
 .hex.t-pasture { fill: #79a352; }
 .hex.t-fields { fill: #d9a441; }
@@ -317,9 +344,13 @@ h1 { margin: 10px 0 0; font-size: 40px; letter-spacing: 0.02em; }
 }
 .hex.robTarget { cursor: pointer; }
 .hex.robTarget:hover { filter: brightness(1.2); }
-.chipC { fill: #f2ead6; stroke: #5a4630; stroke-width: 1.2; filter: drop-shadow(0 1.5px 1px rgba(0,0,0,0.45)); }
+.chipC { fill: #f2ead6; stroke: #5a4630; stroke-width: 1.2; }
+.chipBase { fill: #3a2c1c; opacity: 0.55; }
+.chipDome { pointer-events: none; }
+.chipPip { fill: #2b2419; pointer-events: none; }
+.chipPip.hot { fill: #c0342b; }
 .tileLight { pointer-events: none; }
-.chipC, .chipT, .terrEmo, .robber { pointer-events: none; }
+.chipC, .chipT, .terrEmo, .robber, .chipBase { pointer-events: none; }
 .terrEmo { opacity: 0.95; }
 .chipT { font-weight: 800; fill: #2b2419; text-anchor: middle; }
 .chipT.hot { fill: #c0342b; }
@@ -333,6 +364,7 @@ h1 { margin: 10px 0 0; font-size: 40px; letter-spacing: 0.02em; }
 @keyframes edgeMarch { to { stroke-dashoffset: -12; } }
 .edgeHit:hover { stroke-opacity: 1; stroke-dasharray: none; }
 .bld { stroke: #0b0e14; stroke-width: 1.2; }
+.bldG { filter: drop-shadow(0 3px 2px rgba(0,0,0,0.45)); }
 .bld.pick { cursor: pointer; }
 /* 항구 — 나무 부두와 선착장 다리 */
 .port { pointer-events: none; }
@@ -654,7 +686,7 @@ h1 { margin: 10px 0 0; font-size: 40px; letter-spacing: 0.02em; }
 
 
 /* 도로 — 갓돌·포장·차선 */
-.roadG { pointer-events: none; }
+.roadG { pointer-events: none; filter: drop-shadow(0 2px 1px rgba(0,0,0,0.38)); }
 .roadEdge { stroke: #14171f; stroke-width: 11.5; stroke-linecap: round; opacity: 0.5; }
 .roadBed { stroke-width: 9.5; stroke-linecap: round; }
 .roadTop { stroke-width: 7; stroke-linecap: round; }
@@ -1835,3 +1867,49 @@ html, body { overflow-x: hidden; }
     left: 12px; right: 12px; width: auto;
   }
 }
+
+/* ---------------- 온라인 대기실 ----------------
+   열린 방 목록 · 초대 링크 · 비공개 방 · 내보내기. 판 화면과 같은 변수만 써서 두 테마에서 그대로 맞는다. */
+.rooms { width: 100%; max-width: 300px; margin: 14px auto 0; text-align: left; }
+.rooms-head { display: flex; align-items: baseline; gap: 8px; margin: 0 2px 7px; font-size: 13px; }
+.rooms-head b { font-family: var(--display); letter-spacing: .12em; color: var(--dim); font-size: 12px; }
+.rooms-n { font-size: 11.5px; color: var(--faint); }
+.linkbtn {
+  margin-left: auto; padding: 2px 4px; background: none; border: none; box-shadow: none;
+  color: var(--faint); font-size: 11.5px; text-decoration: underline; text-underline-offset: 3px;
+}
+.linkbtn:hover:not(:disabled) { color: var(--ink); }
+.rooms-list { display: flex; flex-direction: column; gap: 6px; max-height: 176px; overflow-y: auto; }
+.rooms-none { font-size: 11.5px; line-height: 1.7; color: var(--faint); padding: 10px 12px; margin: 0;
+  border: 1px dashed var(--line); border-radius: 10px; word-break: keep-all; background: var(--panel); }
+.room-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 9px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: none;
+}
+.room-row:hover:not(:disabled) { border-color: var(--gold); }
+.room-row .rc { font-weight: 800; letter-spacing: .18em; color: var(--gold); font-size: 13px; }
+.room-row .rn { flex: 1; min-width: 0; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-row .rt { font-size: 11px; color: var(--faint); white-space: nowrap; }
+
+button.copy { display: block; margin: -4px auto 0; padding: 7px 14px; font-size: 12px; border-radius: 999px; }
+#lobby .fine { text-align: center; }
+.check { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 13px; cursor: pointer; }
+.check input { width: auto; padding: 0; margin: 0; border: 0; accent-color: var(--gold); transform: translateY(1px); }
+.fine-in { font-size: 11px; color: var(--faint); }
+.seat .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seat .mark { font-size: 11px; color: var(--faint); border: 1px solid var(--line); border-radius: 6px; padding: 0 5px; }
+.seat .mark.off { color: var(--bad); border-color: var(--bad); }
+.seat .kick {
+  padding: 2px 8px; font-size: 12px; line-height: 1.4; border-radius: 6px;
+  background: none; color: var(--faint); box-shadow: none;
+}
+.seat .kick:hover:not(:disabled) { color: var(--bad); border-color: var(--bad); }
+.pl .offTag { font-size: 10px; color: var(--bad); border: 1px solid var(--bad); border-radius: 5px; padding: 0 4px; }
+#overHint { text-align: center; margin: 10px 0 2px; }
+#over .ghost { margin-top: 6px; }
+#over #btnRematch { width: 100%; margin-top: 10px; }
+/* 방 목록에서 골라 넘어왔을 때 — 눌러야 할 단추를 잠깐 짚어 준다 */
+button.flash { animation: flashBtn .8s ease-in-out 2; }
+@keyframes flashBtn { 50% { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(180,118,31,0.35); } }
+@media (prefers-reduced-motion: reduce) { button.flash { animation: none; border-color: var(--gold); } }
+#title.curtain .rooms    { animation: tFadeUp 0.4s ease 1.74s backwards; }

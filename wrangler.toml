@@ -1,0 +1,26 @@
+# 카탄 — Cloudflare Workers 무료 플랜
+# 화면 파일은 정적 자산으로, 소켓(/ws)과 상태 확인(/healthz)만 Worker → Durable Object 로 간다.
+# 무료 플랜에서는 SQLite 저장소 방식의 Durable Object 만 쓸 수 있다(new_sqlite_classes). 저장소는 쓰지 않는다.
+# 결제 수단이 없으므로 한도를 넘어도 요금이 붙지 않고, 그날 남은 요청만 거절된다.
+name = "catan"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+# process.env 를 쓰려고 켠다 — 시험 때만 --var CATAN_FAST:1 로 판을 빨리 돌린다. 배포본에는 그 값이 없다.
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# public/rules.js · ai.js · ck.js · ck-ai.js 는 루트 원본을 가리키는 심볼릭 링크다.
+# wrangler 는 자산을 모을 때 링크를 따라가 원본 내용을 올린다(복사본을 따로 두지 않는다).
+# 카드 원화(image/ 의 PNG, 74MB)와 규칙서 PDF 는 public/ 밖에 있어 올라가지 않는다. 화면은 public/img/ 의 webp 만 쓴다.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/ws", "/healthz"]
+
+[[durable_objects.bindings]]
+name = "GAME"
+class_name = "CatanGame"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CatanGame"]

@@ -1,5 +1,9 @@
 /* 카탄 — 화면과 진행
-   방장(또는 혼자 하기)의 브라우저가 심판이다. 참가자는 자기 시야만 받아서 그린다. */
+   길이 둘이다.
+   - 혼자 하기(봇과): 이 브라우저가 rules.js · ck.js 와 ai.js · ck-ai.js 로 직접 판을 돌린다. 서버를 거치지 않는다.
+   - 친구와(온라인): 서버(game.js)가 심판이다. 여기서는 받은 시야를 그리고 행동만 보낸다.
+   두 길 모두 같은 applyView 로 그리므로 판 화면 코드는 하나다. 연출(주사위 · 큰 소식 · 중계 · 날아가는 카드)도
+   받은 시야만 보고 여기서 만든다. */
 (function () {
   'use strict';
   var R = window.Rules, AI = window.AI;
@@ -27,11 +31,14 @@
   };
   function rchip(c) { return el('i', 'rc r-' + c, EMOJI[c]); }
   var S = 52;                                     // 육각형 한 변(px)
+  var TOPR = S - 1.5;                             // 타일 윗면 — 옆면이 살짝 드러나게 작게
+  var DEPTH = 14;                                 // 섬(바위층) 두께
+  var TD = 8;                                     // 타일 한 장의 두께
   var SVGNS = 'http://www.w3.org/2000/svg';
 
   var App = {
     ext: false, feed: [], feedBusy: false, feedTimer: null, bigTimer: null, lastLogId: undefined,
-    mode: 'solo', me: 'me', net: null, seats: [], state: null, view: null,
+    mode: 'solo', me: 'me', seats: [], state: null, view: null,   // mode: 'solo' | 'online' 
     started: false, skill: 1, botTimer: null,
     build: null,               // 'road' | 'settlement' | 'city' — 짓기 모드
     discardSel: [],            // 버리기 선택
@@ -47,9 +54,12 @@
     });
     if (which === 'title') replayTitleIntro();
     if (which === 'game') { initZoom(); initLogFold(); }
+    // 결과판은 판 화면 밖에 떠 있어서, 판이 끝난 뒤 나가면 첫 화면 위에 그대로 덮여 있게 된다
+    if (which !== 'game') $('over').classList.add('hidden');
     // 방 밖에서는 채팅이 갈 곳이 없다
     if (which === 'title' || which === 'home') { $('chatBtn').hidden = true; $('chat').hidden = true; chatPeekOff(); }
     chatDock(which === 'game');
+    pollRooms(which === 'title');                // 열린 방 목록은 첫 화면에 있는 동안만 훑는다
   }
 
   // 타이틀로 돌아올 때마다 등장 연출을 처음부터 다시 돌린다
@@ -254,42 +264,45 @@
     return 'rgb(' + r + ',' + g + ',' + b + ')';
   }
 
-  /* ---------------- 진행 ---------------- */
+  /* ---------------- 진행 (혼자 하기 — 이 브라우저가 심판) ----------------
+     온라인 판은 서버(game.js)가 같은 일을 한다. 여기 있는 것은 봇과 혼자 할 때만 돈다. */
 
   function startEngine() {
-    App.ext = (App.mode === 'solo' || App.mode === 'host') ? App.wantExt : App.ext;
+    App.ext = App.wantExt;
     if (App.seats.length < 2) { toast('2명 이상이어야 시작할 수 있습니다.'); return; }
     App.started = true;
     App.state = E().newGame(App.seats.map(function (s) {
       return { id: s.id, name: s.name, bot: s.bot };
     }), Math.floor(Math.random() * 1e9));
-    // 판 수 세기 — 방장(또는 혼자 하기)만 보낸다. 참가자도 보내면 한 판이 인원수만큼 세어진다.
+    // 판 수 세기 — 혼자 하기는 내가 방장이다. 온라인 판은 countGame 이 방장 화면에서만 센다.
     App.statAt = Date.now();
     App.statOver = false;
-    if (App.mode !== 'client' && window.norara) {
-      norara.ev('start', { n: App.seats.filter(function (s) { return !s.bot; }).length });
-    }
+    if (window.norara) norara.ev('start', { n: 1 });
 
-    App.build = null; App.discardSel = [];
-    App.lastLogId = undefined; App.feed = []; App.feedBusy = false;
-    App.seenBuilt = {}; App.confettiDone = false; App.orderSeen = {};
-    resetZoom();
+    freshGame();
     show('game');
     startIntro();
     pushViews();
   }
 
+  /** 새 판을 그리기 전에 지난 판의 연출 기억을 비운다 — 혼자 하기도 온라인도 */
+  function freshGame() {
+    App.build = null; App.discardSel = [];
+    App.lastLogId = undefined; App.feed = []; App.feedBusy = false;
+    App.seenBuilt = {}; App.confettiDone = false; App.orderSeen = {};
+    App.view = null; App.diceKey = null;
+    $('over').classList.add('hidden');
+    resetZoom();
+  }
+
   function pushViews() {
-    var s = App.state;
-    if (App.mode === 'host' && App.net) {
-      App.net.broadcast(function (pid) { return { t: 'view', view: E().viewFor(s, pid) }; });
-    }
-    applyView(E().viewFor(s, App.me));
+    if (App.mode !== 'solo' || !App.state) return;
+    applyView(E().viewFor(App.state, App.me));
   }
 
   function applyView(v) {
-    // 지금 판 중인지 — 방장도 참가자도 알린다(판 수는 방장만 센다)
-    if (window.norara && norara.live) norara.live(v.phase !== 'over');
+    // 지금 판 중인지 — 온라인 판은 상태를 받을 때 countGame 이 알린다
+    if (App.mode === 'solo' && window.norara && norara.live) norara.live(v.phase !== 'over');
     var prev = App.view;
     // 순서 정하기에 들어서면 무엇을 하는 단계인지 먼저 크게 알린다
     if (v.phase === 'order' && (!prev || prev.phase !== 'order')) {
@@ -362,14 +375,19 @@
   }
 
   function act(action, args) {
-    if (App.mode === 'client') { App.net.toHost({ t: 'act', action: action, args: args }); return; }
+    // 온라인 판은 서버가 규칙으로 판정한다. 거절되면 이유가 err 로 와서 토스트로 뜬다.
+    if (App.mode === 'online') {
+      send({ t: 'act', action: action, args: args || [] });
+      App.build = null; App.knightSel = null;
+      return;
+    }
     doAction(App.me, action, args);
   }
   var ALLOWED = ['placeSettlement', 'placeRoad', 'roll', 'discard', 'moveRobber', 'build',
     'buyDev', 'playDev', 'bankTrade', 'offerTrade', 'replyTrade', 'acceptTrade', 'cancelTrade', 'endTurn'];
   function doAction(pid, action, args) {
     var s = App.state;
-    if (!s) return;
+    if (App.mode !== 'solo' || !s) return;
     var allowed = ['rollForOrder', 'placeSettlement', 'placeRoad', 'roll', 'discard', 'moveRobber',
       'build', 'buyDev', 'playDev', 'bankTrade', 'offerTrade', 'replyTrade',
       'acceptTrade', 'cancelTrade', 'endTurn',
@@ -380,11 +398,7 @@
     var eng = E();
     if (typeof eng[action] !== 'function') return;
     var r = eng[action].apply(null, [s, pid].concat(args || []));
-    if (!r.ok) {
-      if (pid === App.me) toast(r.error);
-      else if (App.net) App.net.toPlayer(pid, { t: 'err', msg: r.error });
-      return;
-    }
+    if (!r.ok) { toast(r.error); return; }
     App.build = null;
     App.knightSel = null;
     pushViews();
@@ -394,7 +408,7 @@
   /* ---------------- 봇 ---------------- */
 
   function scheduleBot() {
-    if (App.mode === 'client') return;
+    if (App.mode !== 'solo') return;              // 온라인 판의 봇은 서버가 둔다
     var s = App.state, eng = E();
     if (!s || s.phase === 'over') return;
     clearTimeout(App.botTimer);
@@ -1755,13 +1769,37 @@
 
   /* ---------------- 판 그리기 ---------------- */
 
-  function hexPoints(cx, cy) {
-    var pts = [];
+  function hexVerts(cx, cy, rad) {
+    var r = rad || S, pts = [];
     for (var i = 0; i < 6; i++) {
       var a = Math.PI / 180 * (60 * i - 90);
-      pts.push((cx + S * Math.cos(a)).toFixed(1) + ',' + (cy + S * Math.sin(a)).toFixed(1));
+      pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
     }
-    return pts.join(' ');
+    return pts;                                   // 0 위, 1 오른위, 2 오른아래, 3 아래, 4 왼아래, 5 왼위
+  }
+
+  function hexPoints(cx, cy, rad) {
+    return hexVerts(cx, cy, rad).map(function (p) {
+      return p[0].toFixed(1) + ',' + p[1].toFixed(1);
+    }).join(' ');
+  }
+
+  // 타일 가장자리 — 빛을 받는 윗변과 그늘지는 아랫변
+  function hexArc(cx, cy, rad, from, n) {
+    var p = hexVerts(cx, cy, rad), d = '';
+    for (var k = 0; k <= n; k++) {
+      var q = p[(from + k) % 6];
+      d += (k ? 'L' : 'M') + q[0].toFixed(1) + ' ' + q[1].toFixed(1);
+    }
+    return d;
+  }
+
+  // 아래를 향한 네 변만 아래로 늘여 옆면 띠를 만든다
+  function hexWall(cx, cy, rad, d) {
+    var p = hexVerts(cx, cy, rad), o = [1, 2, 3, 4, 5], i, s2 = '';
+    for (i = 0; i < o.length; i++) s2 += (i ? 'L' : 'M') + p[o[i]][0].toFixed(1) + ' ' + p[o[i]][1].toFixed(1);
+    for (i = o.length - 1; i >= 0; i--) s2 += 'L' + p[o[i]][0].toFixed(1) + ' ' + (p[o[i]][1] + d).toFixed(1);
+    return s2 + 'Z';
   }
 
   function renderBoard(v) {
@@ -1784,6 +1822,43 @@
     grad.appendChild(svgEl('stop', { offset: '60%', 'stop-color': '#fff', 'stop-opacity': 0.04 }));
     grad.appendChild(svgEl('stop', { offset: '100%', 'stop-color': '#000', 'stop-opacity': 0.12 }));
     defs.appendChild(grad);
+    // 섬 옆면(바위) — 위는 흙빛, 아래로 갈수록 어둡다
+    var rg = svgEl('linearGradient', { id: 'rockGrad', gradientUnits: 'userSpaceOnUse', x1: 0, y1: -300, x2: 0, y2: 300 });
+    rg.appendChild(svgEl('stop', { offset: '0%', class: 'rock0' }));
+    rg.appendChild(svgEl('stop', { offset: '55%', class: 'rock1' }));
+    rg.appendChild(svgEl('stop', { offset: '100%', class: 'rock2' }));
+    defs.appendChild(rg);
+    // 바다 — 섬 가까이는 얕고 밝게, 바깥은 깊고 어둡게
+    var sg2 = svgEl('radialGradient', { id: 'seaDeep', gradientUnits: 'userSpaceOnUse', cx: 0, cy: 0, r: 300 });
+    sg2.appendChild(svgEl('stop', { offset: '52%', class: 'sea0' }));
+    sg2.appendChild(svgEl('stop', { offset: '78%', class: 'sea1' }));
+    sg2.appendChild(svgEl('stop', { offset: '100%', class: 'sea2' }));
+    defs.appendChild(sg2);
+    // 숫자 칩 — 나무 원반이 볼록하게
+    var cd = svgEl('radialGradient', { id: 'chipDome', cx: '34%', cy: '28%', r: '82%' });
+    cd.appendChild(svgEl('stop', { offset: '0%', 'stop-color': '#fff', 'stop-opacity': 0.55 }));
+    cd.appendChild(svgEl('stop', { offset: '52%', 'stop-color': '#fff', 'stop-opacity': 0.06 }));
+    cd.appendChild(svgEl('stop', { offset: '100%', 'stop-color': '#4a3826', 'stop-opacity': 0.34 }));
+    defs.appendChild(cd);
+    // 섬이 물에 드리우는 그림자
+    var bl = svgEl('filter', { id: 'isleBlur', x: '-25%', y: '-25%', width: '150%', height: '150%' });
+    bl.appendChild(svgEl('feGaussianBlur', { stdDeviation: 9 }));
+    defs.appendChild(bl);
+    var fb = svgEl('filter', { id: 'foamBlur', x: '-25%', y: '-25%', width: '150%', height: '150%' });
+    fb.appendChild(svgEl('feGaussianBlur', { stdDeviation: 4 }));
+    defs.appendChild(fb);
+    // 옆면 빛 — 위는 밝고 아래로 어두워진다
+    var ws = svgEl('linearGradient', { id: 'wallShade', x1: 0, y1: 0, x2: 0, y2: 1 });
+    ws.appendChild(svgEl('stop', { offset: '0%', 'stop-color': '#fff', 'stop-opacity': 0.2 }));
+    ws.appendChild(svgEl('stop', { offset: '38%', 'stop-color': '#000', 'stop-opacity': 0.06 }));
+    ws.appendChild(svgEl('stop', { offset: '100%', 'stop-color': '#000', 'stop-opacity': 0.42 }));
+    defs.appendChild(ws);
+    // 바위층을 섬 모양으로만 오려 낸다
+    var rc = svgEl('clipPath', { id: 'rockClip' });
+    v.board.hexes.forEach(function (h) {
+      rc.appendChild(svgEl('polygon', { points: hexPoints(px(h.X), py(h.Y) + DEPTH, S) }));
+    });
+    defs.appendChild(rc);
     svg.appendChild(defs);
     var g = svgEl('g', {});
     svg.appendChild(g);
@@ -1792,12 +1867,16 @@
     // 바다 — 섬 둘레만 얇게 두른다 (판이 잘리지 않게)
     (function () {
       var pts = [];
-      var Rr = S * 5.28;                     // 섬 바깥 반지름보다 살짝 크게
+      var Rr = S * 5.35;                     // 섬 두께까지 물이 받쳐 주게
       for (var i = 0; i < 6; i++) {
         var a = Math.PI / 180 * (60 * i - 90);
         pts.push((Rr * Math.cos(a)).toFixed(1) + ',' + (Rr * Math.sin(a)).toFixed(1));
       }
-      g.appendChild(svgEl('polygon', { points: pts.join(' '), class: 'seaRing' }));
+      g.appendChild(svgEl('polygon', { points: pts.join(' '), class: 'seaRing deep' }));
+      // 바다 밖으로는 아무것도 새어 나가지 않게
+      var sc = svgEl('clipPath', { id: 'seaClip' });
+      sc.appendChild(svgEl('polygon', { points: pts.join(' ') }));
+      svg.querySelector('defs').appendChild(sc);
       // 물결 — 섬 바깥 바다에 짧은 곡선들이 흘러간다
       var waves = svgEl('g', { class: 'waves' });
       var rows = [-236, -196, 200, 236, -120, 120];
@@ -1813,25 +1892,59 @@
       // 섬 안쪽에는 물결이 보이지 않게 — 섬 모양으로 구멍을 낸다
       var mask = svgEl('mask', { id: 'seaOnly' });
       mask.appendChild(svgEl('rect', { x: -300, y: -300, width: 600, height: 600, fill: '#fff' }));
-      var islePts = [];
-      for (var mi = 0; mi < 6; mi++) {
-        var ma = Math.PI / 180 * (60 * mi - 90);
-        islePts.push((S * 4.55 * Math.cos(ma)).toFixed(1) + ',' + (S * 4.55 * Math.sin(ma)).toFixed(1));
-      }
-      mask.appendChild(svgEl('polygon', { points: islePts.join(' '), fill: '#000' }));
+      v.board.hexes.forEach(function (h) {                 // 섬 모양 그대로 — 두께까지
+        mask.appendChild(svgEl('polygon', { points: hexPoints(px(h.X), py(h.Y) + DEPTH * 0.5, S + 7), fill: '#000' }));
+        mask.appendChild(svgEl('polygon', { points: hexPoints(px(h.X), py(h.Y) + DEPTH, S + 7), fill: '#000' }));
+      });
       svg.querySelector('defs').appendChild(mask);
       waves.setAttribute('mask', 'url(#seaOnly)');
       g.appendChild(waves);
     })();
 
+    // 섬에 두께를 준다 — 평평한 그림이 아니라 물 위에 얹힌 덩어리로 보이게.
+    // 육각형을 아래로 늘인 띠가 옆면이 되고, 앞 타일이 뒤 타일의 옆면을 가린다.
+    function hexLayer(cls, dy, rad) {
+      var gg = svgEl('g', { class: cls });
+      v.board.hexes.forEach(function (h) {
+        gg.appendChild(svgEl('polygon', { points: hexPoints(px(h.X), py(h.Y) + (dy || 0), rad) }));
+      });
+      return gg;
+    }
+    // 물에 드리운 그림자
+    var sea = svgEl('g', { 'clip-path': 'url(#seaClip)' });
+    g.appendChild(sea);
+    var cast = hexLayer('isleCast', DEPTH + 13, S + 3);
+    cast.setAttribute('filter', 'url(#isleBlur)');
+    sea.appendChild(cast);
+    // 섬에 부딪히는 물거품 — 윤곽을 따라 뿌옇게
+    var foam = hexLayer('isleFoam', DEPTH * 0.45, S + 8);
+    foam.setAttribute('filter', 'url(#foamBlur)');
+    sea.appendChild(foam);
+    // 바위층 — 섬 전체의 옆면
+    var rock = svgEl('g', { 'clip-path': 'url(#rockClip)', class: 'isleRock' });
+    rock.appendChild(svgEl('rect', { x: -300, y: -300, width: 600, height: 600, fill: 'url(#rockGrad)' }));
+    for (var sy = -260; sy < 300; sy += 8) {                      // 지층 결
+      rock.appendChild(svgEl('path', { d: 'M-300 ' + sy + ' q78 5 156 0 q78 -5 156 0', class: 'strata' }));
+    }
+    sea.appendChild(rock);
+    // 타일 한 장씩의 옆면 — 뒤에서 앞으로 그려야 앞 타일이 제대로 가린다
+    var order = v.board.hexes.slice().sort(function (a, b) { return py(a.Y) - py(b.Y); });
+    var sides = svgEl('g', { class: 'tileSides' });
+    order.forEach(function (h) {
+      var d = hexWall(px(h.X), py(h.Y), TOPR, TD);
+      sides.appendChild(svgEl('path', { d: d, class: 'hexSide s-' + h.terrain }));
+      sides.appendChild(svgEl('path', { d: d, class: 'hexSideLit' }));
+    });
+    g.appendChild(sides);
+
     // 땅 타일 — 한 그룹으로 묶어 섬 전체에 그림자
-    var isle = svgEl('g', { class: 'isle', filter: 'url(#isleShadow)' });
+    var isle = svgEl('g', { class: 'isle' });
     g.appendChild(isle);
-    v.board.hexes.forEach(function (h) {
+    order.forEach(function (h) {
       var cx = px(h.X), cy = py(h.Y);
       var robbedHere = h.i === v.robber;
       var hexEl = svgEl('polygon', {
-        points: hexPoints(cx, cy),
+        points: hexPoints(cx, cy, TOPR),
         class: 'hex t-' + h.terrain + (robbedHere ? ' robbed' : '') + (introLeft(h.i * 70, 420) !== null ? ' tileIn' : ''),
         'data-hex': h.i
       });
@@ -1845,9 +1958,12 @@
       isle.appendChild(hexEl);
       isle.appendChild(scenery(h.terrain, cx, cy));
       // 인쇄된 종이 타일 같은 빛
-      isle.appendChild(svgEl('polygon', { points: hexPoints(cx, cy), fill: 'url(#tileLight)', class: 'tileLight' }));
+      isle.appendChild(svgEl('polygon', { points: hexPoints(cx, cy, TOPR), fill: 'url(#tileLight)', class: 'tileLight' }));
+      // 모서리 — 윗변은 빛을 받고 아랫변은 그늘진다. 타일이 한 장씩 도드라진다
+      isle.appendChild(svgEl('path', { d: hexArc(cx, cy, TOPR - 1.3, 3, 3), class: 'hexLip' }));
+      isle.appendChild(svgEl('path', { d: hexArc(cx, cy, TOPR - 1.3, 0, 3), class: 'hexDip' }));
       if (robbedHere) {
-        isle.appendChild(svgEl('polygon', { points: hexPoints(cx, cy), fill: 'url(#hatch)', class: 'robHatch' }));
+        isle.appendChild(svgEl('polygon', { points: hexPoints(cx, cy, TOPR), fill: 'url(#hatch)', class: 'robHatch' }));
       }
 
       // 육각형 안을 위아래로 나눠 쓴다 — 위는 자원, 아래는 숫자 칩
@@ -1867,10 +1983,20 @@
         var cl = introLeft(INTRO_TILES + h.i * 55, 340);
         var chipG = svgEl('g', { class: 'chipG' + (cl !== null ? ' chipIn' : ''), 'data-hex': h.i });
         if (cl !== null) chipG.style.animationDelay = cl + 'ms';
-        chipG.appendChild(svgEl('circle', { cx: cx, cy: ny, r: 14, class: 'chipC' }));
-        var t = svgEl('text', { x: cx, y: ny + 5, 'font-size': 15, class: 'chipT' + (hot ? ' hot' : '') });
+        chipG.appendChild(svgEl('circle', { cx: cx, cy: ny + 3.2, r: 15, class: 'chipBase' }));
+        chipG.appendChild(svgEl('circle', { cx: cx, cy: ny, r: 15, class: 'chipC' }));
+        var t = svgEl('text', { x: cx, y: ny + 3, 'font-size': 15, class: 'chipT' + (hot ? ' hot' : '') });
         t.textContent = h.number;
         chipG.appendChild(t);
+        // 확률 점 — 나올 확률이 높을수록 점이 많다. 진짜 칩과 같은 표시다
+        var dots = 6 - Math.abs(7 - h.number);
+        for (var di = 0; di < dots; di++) {
+          chipG.appendChild(svgEl('circle', {
+            cx: cx + (di - (dots - 1) / 2) * 2.9, cy: ny + 8.4, r: 0.95,
+            class: 'chipPip' + (hot ? ' hot' : '')
+          }));
+        }
+        chipG.appendChild(svgEl('circle', { cx: cx, cy: ny, r: 15, fill: 'url(#chipDome)', class: 'chipDome' }));
         g.appendChild(chipG);
       }
     });
@@ -2085,7 +2211,7 @@
     (pick.hexes || []).forEach(function (hi) {
       var h = v.board.hexes[hi];
       var sel = App.pickHex && App.pickHex.first === hi;
-      var poly = svgEl('polygon', { points: hexPoints(px(h.X), py(h.Y)), class: 'hexPick' + (sel ? ' on' : '') });
+      var poly = svgEl('polygon', { points: hexPoints(px(h.X), py(h.Y), TOPR), class: 'hexPick' + (sel ? ' on' : '') });
       poly.addEventListener('click', function () { clickRobber(hi); });
       g.appendChild(poly);
     });
@@ -2342,6 +2468,13 @@
       var nm = el('span', 'nm', p.name);
       d.appendChild(nm);
       if (p.id === v.me) d.appendChild(el('span', 'meTag', '나'));
+      // 온라인 판에서 연결이 끊긴 사람 — 해야 할 일이 오면 20초 뒤 판에서 빠진다
+      var seat = seatOf(p.id);
+      if (App.mode === 'online' && !p.out && !p.bot && (!seat || !seat.connected)) {
+        var off = el('span', 'offTag', '끊김');
+        off.title = '연결이 끊겼습니다. 차례가 오면 잠깐 기다렸다가 판에서 뺍니다.';
+        d.appendChild(off);
+      }
       if (isTurn) d.appendChild(el('span', 'turnTag', p.id === v.me ? '내 차례' : '차례'));
       // 남의 차례면 말풍선 — 지금 뭘 하는지
       if (isTurn && p.id !== v.me && v.phase !== 'over') {
@@ -3238,14 +3371,18 @@
     $('bigNews').classList.add('hidden');
     App.feed.length = 0;
     if (!App.confettiDone) { App.confettiDone = true; confetti(); }
-    // 판 하나에 한 번만 — 이 화면은 다시 그릴 때마다 불린다
-    if (App.mode !== 'client' && !App.statOver && window.norara) {
+    // 판 하나에 한 번만 — 이 화면은 다시 그릴 때마다 불린다. 온라인 판은 countGame 이 방장 화면에서 센다.
+    if (App.mode === 'solo' && !App.statOver && window.norara) {
       App.statOver = true;
-      norara.ev('end', {
-        n: App.seats.filter(function (s) { return !s.bot; }).length,
-        sec: Math.round((Date.now() - (App.statAt || Date.now())) / 1000)
-      });
+      norara.ev('end', { n: 1, sec: Math.round((Date.now() - (App.statAt || Date.now())) / 1000) });
     }
+    // 한 판 더 — 혼자면 바로, 온라인이면 방장만 누를 수 있다(모두 대기실로 돌아간다)
+    var host = App.mode === 'solo' || (Room && Room.hostId === App.me);
+    $('btnRematch').classList.toggle('hidden', !host);
+    $('btnRematch').textContent = App.mode === 'solo' ? '한 판 더' : '대기실로 (한 판 더)';
+    $('overHint').textContent = host ? '' : '방장이 한 판 더를 누르면 모두 대기실로 돌아갑니다.';
+    $('overHint').classList.toggle('hidden', host);
+    $('btnAgain').textContent = App.mode === 'solo' ? '홈으로' : '나가기';
 
     var w = v.winner ? playerIn(v, v.winner) : null;
     var title = $('overTitle');
@@ -3392,107 +3529,316 @@
     renderLog(v);
   }
 
-  /* ---------------- 대기실 ---------------- */
+  /* ---------------- 온라인 — 서버와 잇기 ----------------
+     서버(Cloudflare 무료 플랜)는 켜져 있는 시간이 한도라서, 20분 동안 아무 조작이 없으면
+     서버가 연결을 닫는다(4000). 그때는 스스로 다시 붙지 않고 화면을 다시 만질 때 이어 붙는다.
+     켜 두기만 한 탭이 서버를 붙잡아 두지 않게. 자리는 탭마다 sessionStorage 에 적어 두어
+     새로고침해도 같은 자리로 돌아온다. */
+  var ws = null, Room = null, pingT = null, resting = false, restWhy = 0, wokeUp = false;
+  var store = (function () {
+    try { var t = window.sessionStorage; t.getItem('x'); return t; }
+    catch (e) {                                  // 막힌 브라우저에서도 판은 돌게 — 새로고침 복귀만 안 된다
+      var m = {};
+      return { getItem: function (k) { return m[k] || null; }, setItem: function (k, v) { m[k] = String(v); }, removeItem: function (k) { delete m[k]; } };
+    }
+  })();
+  var seated = function () { return !!(store.getItem('catan.code') && store.getItem('catan.token')); };
+  function seatOf(pid) {
+    for (var i = 0; i < App.seats.length; i++) if (App.seats[i].id === pid) return App.seats[i];
+    return null;
+  }
 
-  function renderSeats(seats, canControl) {
-    syncChatVisible(seats);         // 대기실에서도 채팅이 되어야 한다
-    var box = $('seats');
-    box.innerHTML = '';
-    seats.forEach(function (s, i) {
-      var d = el('div', 'seat');
-      var dot = el('span', 'dot');
-      dot.style.background = PCOLOR[R.COLORS[i]] || '#666';
-      d.appendChild(dot);
-      d.appendChild(el('span', null, s.name));
-      if (s.bot) d.appendChild(el('span', 'bot', '봇'));
-      box.appendChild(d);
+  function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+  function resume() {
+    connect(function () {
+      if (seated()) send({ t: 'resume', code: store.getItem('catan.code'), token: store.getItem('catan.token') });
     });
-    $('hostControls').classList.toggle('hidden', !canControl);
   }
 
-  function broadcastLobby() {
-    if (!App.net) return;
-    var list = App.seats.map(function (s) { return { name: s.name, bot: s.bot }; });
-    App.net.broadcast(function () { return { t: 'lobby', seats: list }; });
+  function wake(e) {
+    if (!resting) return;
+    if (e.type === 'visibilitychange' && (document.hidden || restWhy === 4001)) return;   // 넘겨준 자리는 눌러서만 되찾는다
+    resting = false;
+    $('toast').classList.remove('on');
+    if (seated()) { wokeUp = true; resume(); }
+    else if (!$('title').classList.contains('hidden')) pollRooms(true);
   }
+  ['pointerdown', 'keydown'].forEach(function (t) { addEventListener(t, wake, true); });
+  document.addEventListener('visibilitychange', wake);
 
-  /* ---------------- 방장 / 참가자 ---------------- */
+  function connect(onOpen) {
+    if (ws && ws.readyState === 1) { if (onOpen) onOpen(); return; }
+    // 붙는 중이던 옛 소켓(만들기 연타 등)은 손을 떼고 닫는다. 그대로 두면 나중에 그게 닫힐 때
+    // 지금 소켓의 ping 을 꺼 버려서, 멀쩡한 연결이 끊긴 것으로 처리된다.
+    if (ws) { ws.onopen = ws.onmessage = ws.onclose = null; try { ws.close(); } catch (e) {} }
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    var sock = ws = new WebSocket(proto + '://' + location.host + '/ws');
 
-  function beHost() {
-    chatReset();                               // 전 방에서 오간 말을 새 방에 들고 가지 않는다
-    App.mode = 'host'; App.me = 'host';
-    App.seats = [{ id: 'host', name: myName(), bot: false }];
-    App.net = new Net();
-    App.net.on.status = toast;
-    App.net.on.error = toast;
-    App.net.on.open = function (code) {
-      $('roomCode').textContent = code;
-      $('lobbyHint').textContent = '친구에게 이 코드를 알려주세요.';
-      show('lobby'); renderSeats(App.seats, true);
+    sock.onopen = function () {
+      if (sock !== ws) return;
+      clearInterval(pingT);
+      pingT = setInterval(function () { send({ t: 'ping' }); }, 25000);   // 서버가 끊긴 탭을 가려낼 수 있게
+      if (onOpen) onOpen();
     };
-    App.net.on.join = function (pid, name) {
-      if (App.started || App.seats.length >= 4) {
-        App.net.toPlayer(pid, { t: 'err', msg: App.started ? '이미 시작된 방입니다.' : '자리가 찼습니다.' });
-        App.net.kick(pid);                         // 붙여 두면 판 화면과 채팅을 계속 받는다
+    sock.onmessage = function (e) {
+      if (sock !== ws) return;
+      var m; try { m = JSON.parse(e.data); } catch (err) { return; }
+      if (m.t === 'moved' || m.t === 'idle') {             // 곧 닫힌다 — 닫힘 코드가 중간에 떨어져도 알 수 있게
+        sock.why = m.t;
+        sock.onclose({ code: m.t === 'moved' ? 4001 : 4000 });   // 닫힘이 늦게 오거나 안 와도 여기서 멈춘다
+        ws = null;
+        try { sock.close(); } catch (err) {}
         return;
       }
-      var base = name, n = 2;
-      while (App.seats.some(function (s) { return s.name === name; })) name = base + n++;
-      App.seats.push({ id: pid, name: name, bot: false });
-      renderSeats(App.seats, true); broadcastLobby(); toast(name + ' 참가');
+      onServer(m);
     };
-    App.net.on.leave = function (pid) {
-      var seat = null;
-      App.seats.forEach(function (s) { if (s.id === pid) seat = s; });
-      if (!seat) return;
-      App.seats = App.seats.filter(function (s) { return s.id !== pid; });
-      // 확장판이면 확장판 엔진으로 — 기본판 dropPlayer 가 확장판 상태를 읽다 던져 모든 화면이 멈췄다
-      if (App.started && App.state) {
-        E().dropPlayer(App.state, pid); pushViews();
-        // 판 중에도 자리 목록을 새로 돌린다 — 참가자는 이걸로 사람 수를 세어 채팅을 거둔다
-        syncChatVisible(App.seats); broadcastLobby();
+    sock.onclose = function (e) {
+      if (sock !== ws) return;
+      clearInterval(pingT);
+      var code = sock.why === 'moved' ? 4001 : sock.why === 'idle' ? 4000 : e.code;
+      // 4000: 오래 조작이 없어 서버가 닫음 · 4001: 다른 탭이 이 자리를 이어받음(탭 복제 등)
+      // 둘 다 스스로 다시 붙지 않는다 — 붙으면 서로를 밀어내며 끝없이 오간다. 누를 때 다시 붙는다.
+      if (code === 4000 || code === 4001) {
+        resting = true; restWhy = code;
+        pollRooms(false);
+        if (!seated()) return;                     // 방 목록만 보던 연결 — 말없이 쉬었다가 누르면 다시 훑는다
+        var t = $('toast');
+        t.textContent = code === 4000
+          ? '한동안 조작이 없어서 연결을 쉬고 있습니다. 아무 곳이나 누르면 다시 붙습니다.'
+          : '다른 창에서 이 자리를 이어받았습니다. 여기서 계속하려면 아무 곳이나 누르세요.';
+        t.classList.add('on');
+        clearTimeout(toastTimer);                  // 누를 때까지 떠 있게
+        return;
       }
-      else { renderSeats(App.seats, true); broadcastLobby(); }
-      toast(seat.name + ' 나감');
+      ws = null;
+      if (seated()) {
+        toast('연결이 끊겼습니다. 다시 붙는 중…');
+        setTimeout(function () { if (!ws && seated() && !resting) resume(); }, 1200);
+      }
     };
-    App.net.on.data = function (pid, msg) {
-      if (msg.t === 'act' && App.started) doAction(pid, msg.action, msg.args || []);
-      else if (msg.t === 'chat') relayChat(pid, msg.text);
-    };
-    App.net.host();
   }
 
-  function beClient(code) {
-    chatReset();                               // 전 방에서 오간 말을 새 방에 들고 가지 않는다
-    App.mode = 'client';
-    App.net = new Net();
-    App.net.on.status = toast;
-    App.net.on.error = function (m) { toast(m); show('home'); App.net.close(); };
-    App.net.on.open = function (c) {
-      // 방장은 나를 내 연결 id 로 부른다. 판이 시작되기 전에도 알고 있어야
-      // 대기실에서 내가 친 채팅을 내 것으로 알아본다(안 그러면 남의 말처럼 보이고 알림까지 센다).
-      if (App.net.peer && App.net.peer.id) App.me = App.net.peer.id;
-      $('roomCode').textContent = c;
-      $('lobbyHint').textContent = '방장이 시작하기를 기다리는 중…';
-      show('lobby'); renderSeats([], false);
-    };
-    App.net.on.data = function (_, msg) {
-      if (msg.t === 'lobby') {
-        // 참가자는 자리 목록을 여기서만 받는다. 기억해 두지 않으면
-        // 판이 시작된 뒤 사람 수를 셀 수 없어 채팅이 사라져 버린다.
-        App.seats = msg.seats || [];
-        renderSeats(App.seats, false);
-      }
-      else if (msg.t === 'view') {
-        App.me = msg.view.me;
-        App.ext = msg.view.ext === 'ck';
-        if ($('game').classList.contains('hidden')) { show('game'); startIntro(); }
-        applyView(msg.view);
-      } else if (msg.t === 'chat') addChat(msg.name, msg.text, msg.from === App.me);
-      else if (msg.t === 'err') toast(msg.msg);
-    };
-    App.net.join(code, myName());
+  /** 서버 연결을 내려놓는다 — 혼자 하기에는 필요 없다. 붙여 두면 서버가 괜히 깨어 있다. */
+  function hangUp() {
+    pollRooms(false);
+    clearInterval(pingT);
+    if (ws) { ws.onopen = ws.onmessage = ws.onclose = null; try { ws.close(); } catch (e) {} }
+    ws = null;
   }
+
+  var leaving = false;          // 끊긴 채 나가느라 잠깐 붙은 동안 — 대기실 화면이 번쩍 뜨지 않게 흘려보낸다
+  function onServer(m) {
+    if (leaving) {
+      if (m.t !== 'left' && m.t !== 'err') return;          // 떠나는 방의 상태·채팅은 받지 않는다
+      leaving = false;
+      if (m.t === 'err') return;
+    }
+    switch (m.t) {
+      case 'welcome':
+        wokeUp = false; entering = 0;
+        App.mode = 'online';
+        if (m.code !== chatRoom) { chatRoom = m.code; chatReset(); }   // 다른 방이면 채팅을 비운다
+        App.me = m.you;
+        store.setItem('catan.code', m.code);
+        store.setItem('catan.token', m.token);
+        try { history.replaceState(null, '', location.pathname + '?room=' + m.code); } catch (e) {}
+        pollRooms(false);
+        break;
+
+      case 'state':
+        if (App.mode !== 'online') return;           // 혼자 하기로 넘어간 뒤 늦게 온 것
+        countGame(m);                                // Room 을 덮기 전에 — 직전 phase 가 있어야 전이를 잡는다
+        var was = Room;
+        Room = m;
+        App.me = m.you;
+        App.seats = m.players;
+        if (m.phase === 'lobby') {
+          App.view = null; App.started = false; App.state = null;
+          clearTimeout(App.introTimer); App.intro = false;
+          show('lobby');
+          renderLobby();
+        } else if (m.view) {
+          App.ext = m.view.ext === 'ck';               // 판 종류는 서버가 정한다 — 방장이 대기실에서 바꿨을 수 있다
+          // 새 판이 시작됐거나(대기실에서 넘어옴) 새로고침으로 판에 돌아왔다 — 지난 판의 연출 기억을 비운다
+          var fresh = !App.started || (was && was.phase === 'lobby');
+          App.started = true;
+          if (fresh || $('game').classList.contains('hidden')) {
+            freshGame();
+            show('game');
+            // 판이 깔리는 연출은 판을 처음 받을 때만 — 새로고침으로 돌아온 한참 뒤의 판에서 다시 돌지 않게
+            if (m.view.phase === 'order') startIntro();
+          }
+          syncChatVisible();
+          applyView(m.view);
+        }
+        break;
+
+      case 'chat':
+        addChat(m.name, m.text, m.from === App.me);
+        break;
+
+      case 'ev':
+        if (m.kind === 'joined' && m.by !== App.me) toast(m.name + ' 참가');
+        else if (m.kind === 'left') toast(m.name + ' 나감');
+        else if (m.kind === 'dropped') toast(m.name + ' — 연결이 끊겨 판에서 빠졌습니다');
+        break;
+
+      case 'rooms':
+        roomList = m.list || [];
+        paintRooms();
+        break;
+
+      case 'err':
+        entering = 0;
+        // 오래 쉬다 돌아왔는데 그사이 방이 정리된 경우 — 무엇 때문인지 알려 준다
+        toast(m.fatal && wokeUp ? '오래 비워 둔 사이 방이 정리됐습니다. 새로 만들어 주세요.' : m.msg);
+        if (m.fatal) {
+          wokeUp = false;
+          store.removeItem('catan.code'); store.removeItem('catan.token');
+          try { history.replaceState(null, '', location.pathname); } catch (e) {}
+          App.mode = 'solo'; Room = null; App.view = null; App.started = false;
+          show('home');
+        }
+        break;
+    }
+  }
+
+  /* 판 수 세기 — 방장 화면에서만 보낸다. 사람마다 보내면 한 판이 인원수만큼 세어진다.
+     "지금 판 중인가" 는 참가자도 상태를 받을 때마다 알린다. */
+  function countGame(m) {
+    if (window.norara && norara.live) norara.live(m.phase === 'playing');
+    if (!window.norara || !m.players || m.hostId !== m.you) return;
+    var humans = m.players.filter(function (p) { return !p.bot; }).length;
+    // 시작은 대기실에서 넘어오는 순간만 센다 — 판 중에 새로고침으로 돌아온 방장이 한 번 더 세지 않게
+    if (m.phase === 'playing' && Room && Room.phase === 'lobby') {
+      App.statAt = Date.now();
+      norara.ev('start', { n: humans });
+    } else if (m.phase === 'over' && (!Room || Room.phase !== 'over') && App.statAt) {
+      norara.ev('end', { n: humans, sec: Math.round((Date.now() - App.statAt) / 1000) });
+      App.statAt = 0;
+    }
+  }
+
+  // 만들기·참가를 연달아 누르면(더블탭 · Enter 와 클릭) 자리가 둘 생긴다. 답이 올 때까지 한 번만 보낸다.
+  var entering = 0;
+  function enter(msg) {
+    if (Date.now() - entering < 4000) return;
+    entering = Date.now();
+    store.removeItem('catan.code'); store.removeItem('catan.token');
+    try { localStorage.setItem('catan.name', myName()); } catch (e) {}
+    clearTimeout(App.botTimer);
+    App.mode = 'online'; Room = null; App.state = null; App.view = null; App.started = false;
+    toast('접속 중…');
+    connect(function () { send(msg); });
+  }
+
+  function leave() {
+    var code = store.getItem('catan.code'), token = store.getItem('catan.token');
+    store.removeItem('catan.code'); store.removeItem('catan.token');
+    resting = false; wokeUp = false;
+    $('toast').classList.remove('on');
+    if (ws && ws.readyState === 1) send({ t: 'leave' });
+    else if (code && token) {
+      // 끊겨 있으면 잠깐 붙어서 자리를 비우고 나온다. 안 그러면 서버에는 자리가 그대로 남는다.
+      leaving = true;
+      connect(function () { send({ t: 'resume', code: code, token: token }); send({ t: 'leave' }); });
+    }
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    App.mode = 'solo'; Room = null; App.view = null; App.started = false;
+    clearTimeout(App.introTimer); App.intro = false;
+    chatRoom = null; chatReset();                // 떠난 방의 말 · 안 읽은 수 · 탭 제목 (n) 을 들고 나가지 않는다
+    show('title');
+  }
+
+  /* ---------------- 대기실 ---------------- */
+  var SKILL_NAME = { '0.4': '쉬움', '0.75': '보통', '1': '어려움' };
+  function renderLobby() {
+    var isHost = Room.hostId === App.me;
+    syncChatVisible();                              // 대기실에서도 채팅이 되어야 한다
+    $('roomCode').textContent = Room.code;
+    $('lobbyHint').textContent = isHost
+      ? '친구에게 코드나 초대 링크를 보내세요.' + (Room.cfg.priv ? ' 비공개 방이라 목록에는 안 보입니다.' : '')
+      : '방장이 시작하기를 기다리는 중…';
+
+    var box = $('seats'); box.innerHTML = '';
+    Room.players.forEach(function (p, i) {
+      var row = el('div', 'seat');
+      var dot = el('span', 'dot');
+      dot.style.background = PCOLOR[R.COLORS[i]] || '#666';   // 시작하면 이 순서대로 말 색이 정해진다
+      row.appendChild(dot);
+      row.appendChild(el('span', 'who', p.name));
+      if (p.id === App.me) row.appendChild(el('span', 'mark', '나'));
+      if (p.id === Room.hostId) row.appendChild(el('span', 'mark', '방장'));
+      if (p.bot) row.appendChild(el('span', 'mark', '봇'));
+      if (!p.bot && !p.connected) row.appendChild(el('span', 'mark off', '끊김'));
+      if (isHost && p.id !== Room.hostId) {
+        var x = el('button', 'kick', '✕');
+        x.title = '내보내기';
+        x.setAttribute('aria-label', p.name + ' 내보내기');
+        x.onclick = function () { send({ t: 'kick', id: p.id }); };
+        row.appendChild(x);
+      }
+      box.appendChild(row);
+    });
+    for (var k = Room.players.length; k < Room.max; k++) {
+      var e2 = el('div', 'seat'); e2.style.opacity = '.4';
+      e2.appendChild(el('span', 'who', '빈 자리'));
+      box.appendChild(e2);
+    }
+
+    $('hostControls').classList.toggle('hidden', !isHost);
+    $('hostCfg').classList.toggle('hidden', !isHost);
+    $('lobbyMode').value = Room.cfg.ext ? 'ck' : 'base';
+    $('lobbySkill').value = String(Room.cfg.skill);
+    $('lobbyPriv').checked = !!Room.cfg.priv;
+    $('guestCfg').textContent = (Room.cfg.ext ? '도시와 기사 — 13점' : '기본판 — 10점') +
+      ' · 봇 실력 ' + (SKILL_NAME[String(Room.cfg.skill)] || '보통') + (Room.cfg.priv ? ' · 비공개 방' : '');
+    $('guestCfg').classList.toggle('hidden', isHost);
+    $('btnStart').disabled = Room.players.length < Room.min;
+    $('btnAddBot').disabled = Room.players.length >= Room.max;
+  }
+
+  /* ---------------- 열린 방 ----------------
+     첫 화면에 있는 동안만 훑는다 — 방에 들어가거나 다른 화면으로 가면 멈춘다. */
+  var roomList = [], roomsT = null;
+  function askRooms() {
+    if (resting) return;
+    connect(function () { send({ t: 'rooms' }); });
+  }
+  function pollRooms(on) {
+    clearInterval(roomsT);
+    roomsT = null;
+    if (!on || seated() || !window.WebSocket) return;
+    askRooms();
+    roomsT = setInterval(function () { if (!document.hidden) askRooms(); }, 6000);
+  }
+  function paintRooms() {
+    var box = $('roomsList');
+    $('roomsN').textContent = roomList.length ? roomList.length + '곳' : '';
+    if (!roomList.length) {
+      box.innerHTML = '<p class="rooms-none">지금은 기다리는 방이 없습니다 — 방을 만들어 링크를 보내 보세요.</p>';
+      return;
+    }
+    box.innerHTML = roomList.map(function (r) {
+      return '<button class="room-row" data-code="' + esc(r.code) + '">' +
+        '<span class="rc">' + esc(r.code) + '</span>' +
+        '<span class="rn">' + esc(r.host || '누군가') + ' 님 방 · ' + (r.ext ? '도시와 기사' : '기본판') + ' · ' +
+        r.n + '/' + r.max + (r.bots ? ' (봇 ' + r.bots + ')' : '') + '</span>' +
+        '<span class="rt">' + (r.age < 60 ? '방금' : Math.floor(r.age / 60) + '분 전') + '</span></button>';
+    }).join('');
+  }
+  $('roomsList').addEventListener('click', function (e) {
+    var row = e.target.closest('[data-code]');
+    if (!row) return;
+    // 이름은 고르는 화면에서 정한다 — 코드를 채워 두고 그리로 보낸다
+    $('joinCode').value = row.dataset.code;
+    show('home');
+    toast('이름을 확인하고 참가를 누르세요.');
+    $('btnJoin').classList.add('flash');
+    setTimeout(function () { $('btnJoin').classList.remove('flash'); }, 1600);
+  });
+  $('btnRooms').onclick = askRooms;
 
   /* ---------------- 첫 안내 ---------------- */
 
@@ -3531,35 +3877,63 @@
   })();
 
   $('btnSolo').onclick = function () {
+    // 혼자 하기는 서버를 거치지 않는다 — 방 목록을 보느라 붙어 있던 연결도 내려놓는다
+    hangUp();
+    store.removeItem('catan.code'); store.removeItem('catan.token');
     var count = parseInt($('soloCount').value, 10);
     App.skill = parseFloat($('soloSkill').value);
-    App.mode = 'solo'; App.me = 'me';
+    App.mode = 'solo'; App.me = 'me'; Room = null;
     App.seats = [{ id: 'me', name: myName(), bot: false }];
     var names = ['봇 하나', '봇 둘', '봇 셋'];
     for (var i = 0; i < count - 1; i++) App.seats.push({ id: 'bot' + i, name: names[i], bot: true });
+    chatReset();
     startEngine();
   };
   $('btnHost').onclick = function () {
-    if (!window.Peer) { toast('통신 모듈을 불러오지 못했습니다.'); return; }
-    beHost();
+    if (!window.WebSocket) { toast('이 브라우저는 온라인 대전을 지원하지 않습니다.'); return; }
+    enter({ t: 'create', name: myName(), priv: $('hostPriv').checked, ext: !!App.wantExt,
+            skill: parseFloat($('soloSkill').value) });
   };
-  $('btnJoin').onclick = function () {
+  function doJoin() {
     var code = $('joinCode').value.trim().toUpperCase();
     if (code.length !== 4) { toast('방 코드 4자리를 입력해 주세요.'); return; }
-    if (!window.Peer) { toast('통신 모듈을 불러오지 못했습니다.'); return; }
-    beClient(code);
+    if (!window.WebSocket) { toast('이 브라우저는 온라인 대전을 지원하지 않습니다.'); return; }
+    enter({ t: 'join', code: code, name: myName() });
+  }
+  $('btnJoin').onclick = doJoin;
+  $('joinCode').addEventListener('keydown', function (e) { if (e.key === 'Enter') doJoin(); });
+  $('btnAddBot').onclick = function () { send({ t: 'addBot' }); };
+  $('btnStart').onclick = function () { send({ t: 'start' }); };
+  $('lobbyMode').onchange = function () { send({ t: 'cfg', ext: this.value === 'ck' }); };
+  $('lobbySkill').onchange = function () { send({ t: 'cfg', skill: parseFloat(this.value) }); };
+  $('lobbyPriv').onchange = function () { send({ t: 'cfg', priv: this.checked }); };
+  $('btnCopy').onclick = function () {
+    if (!Room) return;
+    var url = location.origin + location.pathname + '?room=' + Room.code;
+    var done = function () { toast('초대 링크를 복사했습니다'); };
+    try { navigator.clipboard.writeText(url).then(done, function () { toast(url); }); }
+    catch (e) { toast(url); }
   };
-  $('joinCode').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btnJoin').click(); });
-  $('btnAddBot').onclick = function () {
-    if (App.seats.length >= 4) return;
-    var names = ['봇 하나', '봇 둘', '봇 셋'];
-    var used = App.seats.filter(function (s) { return s.bot; }).length;
-    App.seats.push({ id: 'bot' + used + '-' + Date.now(), name: names[used] || ('봇 ' + (used + 1)), bot: true });
-    renderSeats(App.seats, true); broadcastLobby();
+  $('btnLeave').onclick = leave;
+  // 판 중에 나가기 — 온라인이면 내 자리는 판에서 빠지고(버리기 · 거래 대답에서도 빠진다) 남은 사람끼리 계속한다
+  $('btnQuit').onclick = function () {
+    var live = App.view && App.view.phase !== 'over';
+    if (live && !confirm(App.mode === 'online' ? '나가면 이 판에서 빠집니다. 나갈까요?' : '이 판을 그만둘까요?')) return;
+    quit();
   };
-  $('btnStart').onclick = function () { App.skill = 0.75; startEngine(); };
-  $('btnLeave').onclick = function () { if (App.net) App.net.close(); location.reload(); };
-  $('btnAgain').onclick = function () { if (App.net) App.net.close(); location.reload(); };
+  function quit() {
+    clearTimeout(App.botTimer);
+    if (App.mode === 'online') { leave(); return; }
+    App.state = null; App.view = null; App.started = false;
+    clearTimeout(App.introTimer); App.intro = false;
+    show('title');
+  }
+  $('btnAgain').onclick = quit;
+  $('btnRematch').onclick = function () {
+    if (App.mode === 'online') { send({ t: 'again' }); return; }
+    $('over').classList.add('hidden');
+    startEngine();
+  };
   $('btnRules').onclick = function () { tourShow(0); };
   $('btnHelp').onclick = function () { $('rules').classList.remove('hidden'); };
   $('btnCloseRules').onclick = function () { $('rules').classList.add('hidden'); };
@@ -3613,39 +3987,19 @@
 
   /* ---------------- 채팅 ----------------
      같은 방 사람끼리만 오간다. 판정과는 무관하고 어디에도 저장되지 않는다.
-     방장이 받아서 모두에게 그대로 넘겨 준다. 혼자 하기(봇과)에서는 아예 뜨지 않는다.
+     서버가 받아서 같은 방 모두에게 그대로 넘겨 준다. 혼자 하기(봇과)에서는 아예 뜨지 않는다.
      판 중에는 단추를 판 왼쪽 아래(확대 단추 맞은편)에 붙인다 — 화면 구석에 띄우면 조작 판을 덮는다. */
 
-  var chatUnread = 0, chatLast = {};      // 도배 방지는 사람마다 따로 센다
+  var chatUnread = 0, chatRoom = null;
   /** 새 방에 들어오면 채팅을 비운다. 안 그러면 전 방에서 오간 말이 새 방 채팅창에 그대로 남는다. */
   function chatReset() {
     $('chatLog').textContent = '';
     $('chat').hidden = true;
-    chatUnread = 0; chatLast = {}; chatBadge(); chatPeekOff();
+    chatUnread = 0; chatBadge(); chatPeekOff();
     chatAway = 0; chatTitle();
   }
-  function chatSeatName(pid) {
-    for (var i = 0; i < App.seats.length; i++) if (App.seats[i].id === pid) return App.seats[i].name;
-    return null;
-  }
-  function relayChat(pid, text) {
-    text = String(text == null ? '' : text).replace(/\s+/g, ' ').trim().slice(0, 200);
-    if (!text) return;
-    var name = chatSeatName(pid);
-    if (name === null) return;             // 자리가 없는 연결(거절당한 참가자 등)의 말은 흘리지 않는다
-    var now = Date.now();
-    // 한 사람이 몰아치는 것만 막는다. 전체를 하나로 세면
-    // 두 사람이 동시에 말할 때 한쪽 말이 소리 없이 사라진다.
-    if (now - (chatLast[pid] || 0) < 350) return;
-    chatLast[pid] = now;
-    var out = { t: 'chat', from: pid, name: name, text: text };
-    App.net.broadcast(function () { return out; });
-    addChat(out.name, text, pid === App.me);
-  }
   function chatSend(text) {
-    if (!App.net) return;
-    if (App.mode === 'client') App.net.toHost({ t: 'chat', text: text });
-    else relayChat(App.me, text);
+    if (App.mode === 'online') send({ t: 'chat', text: text });   // 서버가 같은 방 모두에게 돌려준다(나 포함)
   }
   /** 판 중이면 단추와 말풍선을 판 안으로, 대기실이면 화면 구석으로 옮긴다 */
   function chatDock(inGame) {
@@ -3729,7 +4083,7 @@
     var seats = list || App.seats || [];
     var humans = 0;
     seats.forEach(function (st) { if (!st.bot) humans++; });
-    var on = App.mode !== 'solo' && humans > 1;
+    var on = App.mode === 'online' && humans > 1;
     $('chatBtn').hidden = !on;
     if (!on) { $('chat').hidden = true; chatPeekOff(); }
     else $('chatWho').textContent = humans + '명';
@@ -3750,7 +4104,25 @@
   };
   $('chatText').onkeydown = function (e) { if (e.key === 'Escape') chatOpen(false); };
 
+  /* ---------------- 시작 ----------------
+     초대 링크(?room=CODE)로 왔으면 참가 칸에 코드를 채워 고르는 화면으로.
+     이 탭이 앉아 있던 자리가 있으면(새로고침) 곧바로 그 자리로 돌아간다.
+     ?scene= 으로 여는 연출 재기(qa/scene.js)는 혼자 하기만 쓰므로 여기를 건너뛴다. */
+  (function () {
+    var q = null;
+    try { q = new URLSearchParams(location.search); } catch (e) {}
+    if (q && q.get('scene')) return;
+    var invited = q ? (q.get('room') || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4) : '';
+    if (invited) $('joinCode').value = invited;
+    if (seated() && window.WebSocket) {
+      App.mode = 'online';
+      resume();
+    } else if (invited) show('home');
+    else pollRooms(!$('title').classList.contains('hidden'));
+  })();
+
   App.readLine = readLine;
   App.act = act; App.doAction = doAction; App.pushViews = pushViews; App.render = render;
+  App.S = function () { return Room; };
   window.__ct = App;
 })();
