@@ -65,6 +65,17 @@ const clean = (s, max) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim()
 const token = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(12)),
   b => b.toString(16).padStart(2, '0')).join('');
 
+/** setTimeout 으로 나중에 도는 콜백(봇 걸음 · 끊긴 사람 빼기 · 방장 넘기기 등)은 사람이 보낸 메시지와
+ *  달리 handle() 의 바깥 try/catch를 지나지 않는다 — 안에서 뭔가 어긋나 던지면 Node 프로세스가 죽어
+ *  이 방과 무관한 다른 방의 판까지 통째로 멈춘다. 그런 콜백은 전부 이걸로 감싼다: 한 방이 어긋나도
+ *  로그만 남기고 나머지 방은 그대로 돈다. */
+function safeTimer(fn) {
+  return (...a) => {
+    try { fn(...a); }
+    catch (e) { console.error('타이머 처리 오류', e && e.stack || e); }
+  };
+}
+
 /** 화면이 보낸 인자를 엔진에 넘길 수 있는 모양으로만 남긴다 — 숫자 · 짧은 글자 · 참거짓 · null,
  *  그것들의 배열과 묶음(거래 제안의 자원 → 장수, 무역항의 사람 → [줄 것, 받을 것]).
  *  너무 깊거나 긴 것, 이상한 키(__proto__ 등)가 섞이면 통째로 거절한다. */
@@ -271,7 +282,7 @@ function scheduleBot(room) {
     wait += Math.min(3200, Math.round(backlog * 0.3));
   }
   wait = Math.max(wait, room.holdUntil - now);
-  room.timers.bot = setTimeout(() => botStep(room), wait);
+  room.timers.bot = setTimeout(safeTimer(() => botStep(room)), wait);
 }
 
 function botStep(room) {
@@ -389,7 +400,7 @@ function watchAbsent(room) {
   for (const [pid] of need) {
     const seat = playerOf(room, pid);
     if (!seat || seat.bot || seat.connected || room.dc.has(pid)) continue;
-    room.dc.set(pid, setTimeout(() => absentTimeout(room, s, pid), DC_GRACE));
+    room.dc.set(pid, setTimeout(safeTimer(() => absentTimeout(room, s, pid)), DC_GRACE));
   }
 }
 
@@ -669,11 +680,11 @@ function handle(ws, msg) {
 /** 대기실에서 끊긴 자리를 잠깐 뒤에 비운다 — 그 사이 돌아오면(attach) 취소된다 */
 function armLeave(room, p) {
   clearTimeout(p.leaveT);
-  p.leaveT = setTimeout(() => {
+  p.leaveT = setTimeout(safeTimer(() => {
     if (p.connected || room.phase !== 'lobby' || rooms.get(room.code) !== room) return;
     removePlayer(room, p.id);
     pushState(room);
-  }, LOBBY_GRACE);
+  }), LOBBY_GRACE);
 }
 
 /** 소켓이 닫혔다. 그 사이 같은 자리가 새 소켓으로 다시 붙었으면(새로고침) 건드리지 않는다.
@@ -691,13 +702,13 @@ function disconnect(ws, { keepSeat = false } = {}) {
   // 곧바로 넘기면 새로고침 한 번에 방장을 잃는다. 안 넘기면 '시작'·'한 판 더'를 누를 사람이 없다.
   if (room.hostId === p.id) {
     clearTimeout(room.timers.host);
-    room.timers.host = setTimeout(() => {
+    room.timers.host = setTimeout(safeTimer(() => {
       if (rooms.get(room.code) !== room) return;
       const h = playerOf(room, room.hostId);
       if (h && h.connected) return;
       const next = room.players.find(x => !x.bot && x.connected);
       if (next) { room.hostId = next.id; pushState(room); }
-    }, LOBBY_GRACE);
+    }), LOBBY_GRACE);
   }
 
   if (room.phase === 'lobby') {

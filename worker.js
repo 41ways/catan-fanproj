@@ -93,21 +93,25 @@ export class CatanGame extends DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** 끊긴 소켓 · 오래 가만있는 소켓 정리, 빈 방 청소. 할 일이 없으면 타이머를 멈춘다. */
+  /** 끊긴 소켓 · 오래 가만있는 소켓 정리, 빈 방 청소. 할 일이 없으면 타이머를 멈춘다.
+   *  이 중 하나가 던지면(방 하나의 상태가 어긋난 경우 등) try/catch 없이는 되풀이 타이머가
+   *  거기서 영영 멈춰 버려서 모든 방의 청소가 함께 죽는다 — 로그만 남기고 다음 틱을 잇는다. */
   tick() {
     if (this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = null;
-      const now = Date.now();
-      for (const s of [...this.socks]) {
-        if (now - s.seen > ALIVE_MS) {
-          this.drop(s, 1001, 'gone');
-        } else if (now - s.acted > this.idleMs) {
-          s.send(JSON.stringify({ t: 'idle' }));
-          this.drop(s, 4000, 'idle');
+      try {
+        const now = Date.now();
+        for (const s of [...this.socks]) {
+          if (now - s.seen > ALIVE_MS) {
+            this.drop(s, 1001, 'gone');
+          } else if (now - s.acted > this.idleMs) {
+            s.send(JSON.stringify({ t: 'idle' }));
+            this.drop(s, 4000, 'idle');
+          }
         }
-      }
-      game.sweepRooms(now);
+        game.sweepRooms(now);
+      } catch (e) { console.error('청소 타이머 오류', e && e.stack || e); }
       if (this.socks.size || game.rooms.size) this.tick();
     }, this.sweepMs);
   }
