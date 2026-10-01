@@ -127,7 +127,10 @@
     for (var i = 0; i < v.players.length; i++) if (v.players[i].id === pid) return v.players[i];
     return null;
   }
+  // 관전자는 좌석이 없다 — 서버가 보내는 시야의 me 가 null 이다. 내 것을 가정하는 곳은 이걸로 먼저 거른다.
+  function isSpec(v) { return !!(App.spec || (v && !v.me)); }
   function isMyTurn(v) {
+    if (!v || !v.me) return false;
     if (v.phase === 'setup') return v.setup.who === v.me;
     return v.players[v.turn] && v.players[v.turn].id === v.me;
   }
@@ -921,8 +924,8 @@
     bar.classList.toggle('mine', !!(owner && App.view && owner.id === App.view.me));
     var vv = App.view;
     if (vv) {
-      bar.classList.toggle('urgent', !!vv.mustDiscard[vv.me] ||
-        (!!vv.trade && vv.trade.from !== vv.me && !vv.trade.replies[vv.me]));
+      bar.classList.toggle('urgent', !!vv.me && (!!vv.mustDiscard[vv.me] ||
+        (!!vv.trade && vv.trade.from !== vv.me && !vv.trade.replies[vv.me])));
     }
   }
 
@@ -956,7 +959,7 @@
         msg = (mineOffer ? '내 제안' : actor.name + '의 제안') + ' — 모두 거절했습니다' +
           (mineOffer ? '. 조건을 바꾸거나 제안을 거두세요' : '');
       }
-      if (!mineOffer && !v.trade.replies[v.me]) msg = actor.name + '의 제안 — 받을지 말지 고르세요';
+      if (v.me && !mineOffer && !v.trade.replies[v.me]) msg = actor.name + '의 제안 — 받을지 말지 고르세요';
     } else if (v.phase === 'order') {
       var need = v.players.filter(function (p2) {
         if (p2.out) return false;
@@ -999,9 +1002,9 @@
     txt.textContent = msg;
     bar.classList.toggle('mine', mine && !v.trade);
     // 내가 지금 꼭 해야 하는 일이면 눈에 띄게 재촉한다
-    var urgent = !!v.mustDiscard[v.me] ||
+    var urgent = !!v.me && (!!v.mustDiscard[v.me] ||
       (v.trade && v.trade.from !== v.me && !v.trade.replies[v.me]) ||
-      (mine && v.phase === 'robber');
+      (mine && v.phase === 'robber'));
     bar.classList.toggle('urgent', !!urgent);
     // 남을 기다리는 중이면 점 세 개
     var wait = bar.querySelector('.nowWait');
@@ -1660,6 +1663,7 @@
   }
   function flyOne(from, pid, resC, delay) {
     setTimeout(function () {
+      if (!App.view) return;               // 그사이 방을 나갔다
       var toRect;
       if (pid === App.view.me) {
         var stack = document.querySelector('.cardSlot[data-res="' + resC + '"]');
@@ -2883,6 +2887,7 @@
 
     var box = $('ckTracks');
     box.innerHTML = '';
+    if (isSpec(v)) return;                     // 관전자는 개발 단추가 없다
     var p = meOf(v);
     CK.TRACKS.forEach(function (t) {
       var row = el('div', 'trk trk-' + t);
@@ -2941,7 +2946,8 @@
     /* ── 머리줄: 누구 차례 · 무슨 단계 ── */
     var actor = v.phase === 'setup' ? playerIn(v, v.setup.who)
               : v.phase === 'order' ? null : v.players[v.turn];
-    var mineNow = v.phase === 'setup' ? (v.setup && v.setup.who === v.me)
+    var mineNow = isSpec(v) ? false
+                : v.phase === 'setup' ? (v.setup && v.setup.who === v.me)
                 : v.phase === 'order' ? true : myTurn;
     var head = el('div', 'pHead' + (mineNow ? ' mine' : ''));
     if (App.panelOpen === undefined) App.panelOpen = true;
@@ -2989,7 +2995,9 @@
       return b;
     }
 
-    if (v.phase === 'over') { say2('판이 끝났습니다.'); return; }
+    if (v.phase === 'over') { say2('판이 끝났습니다.', isSpec(v) ? specHint() : ''); return; }
+    // 관전자 — 누를 것이 없다. 지금 무슨 일이 일어나는지만 말해 준다(손패 · 짓기 · 거래 단추는 만들지 않는다).
+    if (isSpec(v)) { say2(specSays(v, actor), specHint()); return; }
     if (p && p.out) { say2('판에서 나갔습니다.'); return; }
 
     /* ── 거래 제안이 떠 있으면 그것부터 ── */
@@ -3238,6 +3246,42 @@
     primary('차례 넘기기  →', function () { act('endTurn', []); });
   }
 
+  /* ---------------- 관전 ---------------- */
+
+  function specHint() {
+    return '관전 중 — 다음 판부터 자리가 나면 같이 해요.';
+  }
+  // 지금 판에서 무슨 일이 일어나고 있는지 한 문장
+  function specSays(v, actor) {
+    var nm = function (pl) { return H(pl ? pl.name : '?'); };
+    if (v.trade) {
+      var from = playerIn(v, v.trade.from);
+      var txt = function (m) { return H(isExt(v) ? CK.handText(m) : R.resText(m)); };
+      return '<b>' + nm(from) + '</b>의 거래 제안 — ' + txt(v.trade.give) + ' 주고 <b>' + txt(v.trade.want) + '</b> 받기';
+    }
+    if (v.phase === 'order') return '모두 주사위를 굴려 순서를 정하는 중…';
+    if (v.phase === 'setup') return H(GA(actor ? actor.name : '?')) + ' 마을과 도로를 놓는 중…';
+    if (v.phase === 'discard') {
+      var names = Object.keys(v.mustDiscard).map(function (pid) { return (playerIn(v, pid) || {}).name; }).filter(Boolean);
+      return H(GA(names.join(', '))) + ' 카드를 버리는 중…';
+    }
+    if (v.phase === 'robber') return H(GA(actor ? actor.name : '?')) + ' 도둑을 옮기는 중…';
+    if (v.phase === 'roll') return H(GA(actor ? actor.name : '?')) + ' 주사위를 굴릴 차례';
+    return H(GA(actor ? actor.name : '?')) + ' 짓고 거래하는 중…';
+  }
+  // 위쪽 안내 띠 — 관전 중일 때만 보인다
+  function paintSpecBar() {
+    var g = $('game'), bar = $('specBar');
+    var on = !!App.spec && App.mode === 'online';
+    if (g) g.classList.toggle('spec', on);
+    if (!bar) return;
+    bar.classList.toggle('hidden', !on);
+    if (on) {
+      var n = Room && Room.specs ? Room.specs.length : 0;
+      $('specMsg').textContent = specHint() + (n > 1 ? ' (관전 ' + n + '명)' : '');
+    }
+  }
+
   /* ---------------- 거래 ---------------- */
 
   function renderTrade(v, msg, acts, btn) {
@@ -3380,7 +3424,9 @@
     var host = App.mode === 'solo' || (Room && Room.hostId === App.me);
     $('btnRematch').classList.toggle('hidden', !host);
     $('btnRematch').textContent = App.mode === 'solo' ? '한 판 더' : '대기실로 (한 판 더)';
-    $('overHint').textContent = host ? '' : '방장이 한 판 더를 누르면 모두 대기실로 돌아갑니다.';
+    $('overHint').textContent = host ? '' : App.spec
+      ? '방장이 한 판 더를 누르면 대기실로 돌아가고, 자리가 있으면 이어서 앉습니다.'
+      : '방장이 한 판 더를 누르면 모두 대기실로 돌아갑니다.';
     $('overHint').classList.toggle('hidden', host);
     $('btnAgain').textContent = App.mode === 'solo' ? '홈으로' : '나가기';
 
@@ -3511,6 +3557,7 @@
 
   function render() {
     if (App.pressing) { App.pendingRender = true; return; }
+    paintSpecBar();
     if (App.view) {
       renderPhaseBar(App.view);
       renderBoardHint(App.view);
@@ -3597,6 +3644,12 @@
       if (sock !== ws) return;
       clearInterval(pingT);
       var code = sock.why === 'moved' ? 4001 : sock.why === 'idle' ? 4000 : e.code;
+      // 관전자는 이어붙을 자리가 없다 — 끊기면(오래 조작이 없어 서버가 닫은 경우도) 관전을 마치고 첫 화면으로
+      if (App.spec && App.mode === 'online') {
+        ws = null;
+        exitSpec(code === 4000 ? '한동안 조작이 없어 관전을 마쳤어요.' : '연결이 끊겨 관전을 마쳤어요.');
+        return;
+      }
       // 4000: 오래 조작이 없어 서버가 닫음 · 4001: 다른 탭이 이 자리를 이어받음(탭 복제 등)
       // 둘 다 스스로 다시 붙지 않는다 — 붙으면 서로를 밀어내며 끝없이 오간다. 누를 때 다시 붙는다.
       if (code === 4000 || code === 4001) {
@@ -3639,9 +3692,19 @@
         wokeUp = false; entering = 0;
         App.mode = 'online';
         if (m.code !== chatRoom) { chatRoom = m.code; chatReset(); }   // 다른 방이면 채팅을 비운다
-        App.me = m.you;
-        store.setItem('catan.code', m.code);
-        store.setItem('catan.token', m.token);
+        if (m.role === 'spec') {
+          // 관전자 — 좌석도 자리표도 없다. 새로고침하면 처음으로 돌아가 코드만 채워진다.
+          App.spec = true; App.me = null; App.specId = m.you;
+          store.removeItem('catan.code'); store.removeItem('catan.token');
+          toast('관전자로 들어왔어요.');
+        } else {
+          // 관전하다 자리가 나서 앉은 경우도 여기로 온다 — 곧 오는 상태가 대기실 자리로 바꿔 준다
+          var wasSpec = App.spec;
+          App.spec = false; App.specId = null; App.me = m.you;
+          store.setItem('catan.code', m.code);
+          store.setItem('catan.token', m.token);
+          if (wasSpec) toast('자리가 나서 참가자가 됐어요.');
+        }
         try { history.replaceState(null, '', location.pathname + '?room=' + m.code); } catch (e) {}
         pollRooms(false);
         break;
@@ -3652,6 +3715,7 @@
         var was = Room;
         Room = m;
         App.me = m.you;
+        App.spec = m.role === 'spec';
         App.seats = m.players;
         if (m.phase === 'lobby') {
           App.view = null; App.started = false; App.state = null;
@@ -3675,11 +3739,12 @@
         break;
 
       case 'chat':
-        addChat(m.name, m.text, m.from === App.me);
+        addChat(m.spec ? m.name + ' (관전)' : m.name, m.text, App.spec ? m.from === App.specId : m.from === App.me);
         break;
 
       case 'ev':
         if (m.kind === 'joined' && m.by !== App.me) toast(m.name + ' 참가');
+        else if (m.kind === 'watch' && m.by !== App.specId) toast(m.name + ' 관전 시작');
         else if (m.kind === 'left') toast(m.name + ' 나감');
         else if (m.kind === 'dropped') toast(m.name + ' — 연결이 끊겨 판에서 빠졌습니다');
         break;
@@ -3697,8 +3762,10 @@
           wokeUp = false;
           store.removeItem('catan.code'); store.removeItem('catan.token');
           try { history.replaceState(null, '', location.pathname); } catch (e) {}
+          App.spec = false; App.specId = null;
           App.mode = 'solo'; Room = null; App.view = null; App.started = false;
           show('home');
+          paintSpecBar();
         }
         break;
     }
@@ -3707,7 +3774,7 @@
   /* 판 수 세기 — 방장 화면에서만 보낸다. 사람마다 보내면 한 판이 인원수만큼 세어진다.
      "지금 판 중인가" 는 참가자도 상태를 받을 때마다 알린다. */
   function countGame(m) {
-    if (window.norara && norara.live) norara.live(m.phase === 'playing');
+    if (window.norara && norara.live) norara.live(m.phase === 'playing' && m.role !== 'spec');   // 관전자는 지금 판 중인 사람이 아니다
     if (!window.norara || !m.players || m.hostId !== m.you) return;
     var humans = m.players.filter(function (p) { return !p.bot; }).length;
     // 시작은 대기실에서 넘어오는 순간만 센다 — 판 중에 새로고침으로 돌아온 방장이 한 번 더 세지 않게
@@ -3733,6 +3800,18 @@
     connect(function () { send(msg); });
   }
 
+  /** 관전을 끝내고 첫 화면으로 — 연결이 끊긴 경우 · 방이 정리된 경우. 나가기 단추는 leave() 가 같은 정리를 한다. */
+  function exitSpec(msg) {
+    App.spec = false; App.specId = null;
+    try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    App.mode = 'solo'; Room = null; App.view = null; App.started = false;
+    clearTimeout(App.introTimer); App.intro = false;
+    chatRoom = null; chatReset();
+    show('title');
+    paintSpecBar();
+    if (msg) toast(msg);
+  }
+
   function leave() {
     var code = store.getItem('catan.code'), token = store.getItem('catan.token');
     store.removeItem('catan.code'); store.removeItem('catan.token');
@@ -3745,10 +3824,12 @@
       connect(function () { send({ t: 'resume', code: code, token: token }); send({ t: 'leave' }); });
     }
     try { history.replaceState(null, '', location.pathname); } catch (e) {}
+    App.spec = false; App.specId = null;
     App.mode = 'solo'; Room = null; App.view = null; App.started = false;
     clearTimeout(App.introTimer); App.intro = false;
     chatRoom = null; chatReset();                // 떠난 방의 말 · 안 읽은 수 · 탭 제목 (n) 을 들고 나가지 않는다
     show('title');
+    paintSpecBar();
   }
 
   /* ---------------- 대기실 ---------------- */
@@ -3757,9 +3838,11 @@
     var isHost = Room.hostId === App.me;
     syncChatVisible();                              // 대기실에서도 채팅이 되어야 한다
     $('roomCode').textContent = Room.code;
-    $('lobbyHint').textContent = isHost
-      ? '친구에게 코드나 초대 링크를 보내세요.' + (Room.cfg.priv ? ' 비공개 방이라 목록에는 안 보입니다.' : '')
-      : '방장이 시작하기를 기다리는 중…';
+    $('lobbyHint').textContent = App.spec
+      ? '대기 중 — 자리가 가득 차서 지켜보고 있어요. 자리가 나면 들어온 순서대로 앉습니다.'
+      : isHost
+        ? '친구에게 코드나 초대 링크를 보내세요.' + (Room.cfg.priv ? ' 비공개 방이라 목록에는 보여도 코드는 숨겨집니다.' : '')
+        : '방장이 시작하기를 기다리는 중…';
 
     var box = $('seats'); box.innerHTML = '';
     Room.players.forEach(function (p, i) {
@@ -3787,13 +3870,18 @@
       box.appendChild(e2);
     }
 
+    var specs = Room.specs || [];
+    $('lobbySpecs').textContent = specs.length ? '관전 중 ' + specs.length + '명 — ' + specs.join(', ') : '';
+    $('lobbySpecs').classList.toggle('hidden', !specs.length);
     $('hostControls').classList.toggle('hidden', !isHost);
     $('hostCfg').classList.toggle('hidden', !isHost);
+    $('lobbySpec').checked = Room.cfg.spec !== false;
     $('lobbyMode').value = Room.cfg.ext ? 'ck' : 'base';
     $('lobbySkill').value = String(Room.cfg.skill);
     $('lobbyPriv').checked = !!Room.cfg.priv;
     $('guestCfg').textContent = (Room.cfg.ext ? '도시와 기사 — 13점' : '기본판 — 10점') +
-      ' · 봇 실력 ' + (SKILL_NAME[String(Room.cfg.skill)] || '보통') + (Room.cfg.priv ? ' · 비공개 방' : '');
+      ' · 봇 실력 ' + (SKILL_NAME[String(Room.cfg.skill)] || '보통') + (Room.cfg.priv ? ' · 비공개 방' : '') +
+      (Room.cfg.spec === false ? ' · 관전 불가' : '');
     $('guestCfg').classList.toggle('hidden', isHost);
     $('btnStart').disabled = Room.players.length < Room.min;
     $('btnAddBot').disabled = Room.players.length >= Room.max;
@@ -3813,22 +3901,32 @@
     askRooms();
     roomsT = setInterval(function () { if (!document.hidden) askRooms(); }, 6000);
   }
-  var ROOM_STATE = { wait: '', full: '가득 참', playing: '게임 중' };
+  var ROOM_STATE = { wait: '대기 중', full: '가득 참', playing: '게임 중' };
+  // 눌러서 들어갈 수 있는 방 — 공개 방이고, 대기 중이거나 관전을 허용한 방. 비공개는 코드가 없어 늘 못 누른다.
+  function roomOpen(r) { return !r.priv && !!r.code && (r.state === 'wait' || !!r.spec); }
+  function roomNote(r) {
+    if (r.priv) return ROOM_STATE[r.state] || '';                       // 비공개 — 코드를 아는 사람만 들어온다
+    if (r.state === 'wait') return r.age < 60 ? '방금' : Math.floor(r.age / 60) + '분 전';
+    if (r.state === 'playing') return r.spec ? (r.n < r.max ? '게임 중 · 다음 판부터 참여' : '게임 중 · 관전만') : '게임 중';
+    return r.spec ? '가득 참 · 관전' : '가득 참';
+  }
   function paintRooms() {
     var box = $('roomsList');
-    var open = roomList.filter(function (r) { return r.state === 'wait'; }).length;
+    var open = roomList.filter(roomOpen).length;       // 들어갈 수 있는 방만 센다
     $('roomsN').textContent = roomList.length ? open + '곳' : '';
     if (!roomList.length) {
-      box.innerHTML = '<p class="rooms-none">지금은 기다리는 방이 없습니다 — 방을 만들어 링크를 보내 보세요.</p>';
+      box.innerHTML = '<p class="rooms-none">지금은 열린 방이 없습니다 — 방을 만들어 링크를 보내 보세요.</p>';
       return;
     }
     box.innerHTML = roomList.map(function (r) {
-      var off = r.state !== 'wait';
-      return '<button class="room-row' + (off ? ' off' : '') + '" data-code="' + esc(r.code) + '"' + (off ? ' disabled' : '') + '>' +
-        '<span class="rc">' + esc(r.code) + '</span>' +
-        '<span class="rn">' + esc(r.host || '누군가') + ' 님 방 · ' + (r.ext ? '도시와 기사' : '기본판') + ' · ' +
-        r.n + '/' + r.max + (r.bots ? ' (봇 ' + r.bots + ')' : '') + '</span>' +
-        '<span class="rt">' + (off ? ROOM_STATE[r.state] : (r.age < 60 ? '방금' : Math.floor(r.age / 60) + '분 전')) + '</span></button>';
+      var ok = roomOpen(r);
+      var name = esc(r.host || '누군가') + ' 님 방 · ' + (r.ext ? '도시와 기사' : '기본판') + ' · ' +
+        r.n + '/' + r.max + (r.bots ? ' (봇 ' + r.bots + ')' : '') + (r.watching ? ' · 관전 ' + r.watching : '');
+      return '<button class="room-row' + (ok ? '' : ' off') + (r.priv ? ' priv' : '') + '"' +
+        (ok ? ' data-code="' + esc(r.code) + '" data-state="' + esc(r.state) + '"' : ' disabled') + '>' +
+        '<span class="rc">' + (r.priv ? '비공개' : esc(r.code)) + '</span>' +
+        '<span class="rn">' + name + '</span>' +
+        '<span class="rt">' + esc(roomNote(r)) + '</span></button>';
     }).join('');
   }
   $('roomsList').addEventListener('click', function (e) {
@@ -3837,7 +3935,7 @@
     // 이름은 고르는 화면에서 정한다 — 코드를 채워 두고 그리로 보낸다
     $('joinCode').value = row.dataset.code;
     show('home');
-    toast('이름을 확인하고 참가를 누르세요.');
+    toast(row.dataset.state === 'wait' ? '이름을 확인하고 참가를 누르세요.' : '이름을 확인하고 참가를 누르세요. 지켜보는 자리로 들어갑니다.');
     $('btnJoin').classList.add('flash');
     setTimeout(function () { $('btnJoin').classList.remove('flash'); }, 1600);
   });
@@ -3895,7 +3993,7 @@
   $('btnHost').onclick = function () {
     if (!window.WebSocket) { toast('이 브라우저는 온라인 대전을 지원하지 않습니다.'); return; }
     enter({ t: 'create', name: myName(), priv: $('hostPriv').checked, ext: !!App.wantExt,
-            skill: parseFloat($('soloSkill').value) });
+            spec: $('hostSpec').checked, skill: parseFloat($('soloSkill').value) });
   };
   function doJoin() {
     var code = $('joinCode').value.trim().toUpperCase();
@@ -3910,6 +4008,7 @@
   $('lobbyMode').onchange = function () { send({ t: 'cfg', ext: this.value === 'ck' }); };
   $('lobbySkill').onchange = function () { send({ t: 'cfg', skill: parseFloat(this.value) }); };
   $('lobbyPriv').onchange = function () { send({ t: 'cfg', priv: this.checked }); };
+  $('lobbySpec').onchange = function () { send({ t: 'cfg', spec: this.checked }); };
   $('btnCopy').onclick = function () {
     if (!Room) return;
     var url = location.origin + location.pathname + '?room=' + Room.code;
@@ -3920,7 +4019,7 @@
   $('btnLeave').onclick = leave;
   // 판 중에 나가기 — 온라인이면 내 자리는 판에서 빠지고(버리기 · 거래 대답에서도 빠진다) 남은 사람끼리 계속한다
   $('btnQuit').onclick = function () {
-    var live = App.view && App.view.phase !== 'over';
+    var live = App.view && App.view.phase !== 'over' && !App.spec;      // 관전자는 빠질 판이 없다
     if (live && !confirm(App.mode === 'online' ? '나가면 이 판에서 빠집니다. 나갈까요?' : '이 판을 그만둘까요?')) return;
     quit();
   };
@@ -4086,6 +4185,9 @@
     var seats = list || App.seats || [];
     var humans = 0;
     seats.forEach(function (st) { if (!st.bot) humans++; });
+    // 관전자도 말은 한다 — 지켜보는 사람이 있으면 사람이 하나뿐인 방에서도 채팅이 의미가 있다
+    var watchers = Room && Room.specs ? Room.specs.length : 0;
+    humans += watchers;
     var on = App.mode === 'online' && humans > 1;
     $('chatBtn').hidden = !on;
     if (!on) { $('chat').hidden = true; chatPeekOff(); }

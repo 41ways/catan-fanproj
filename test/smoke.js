@@ -110,11 +110,16 @@ async function check(name, fn) {
     assert.strictEqual(c.name, '민수');
   });
 
-  await check('열린 방 목록에 보이고, 비공개로 바꾸면 사라진다', async () => {
-    assert.ok((await rooms()).some(r => r.code === code), '목록에 없음');
+  await check('열린 방 목록에 보이고, 비공개로 바꾸면 코드 없이 priv 로만 남는다', async () => {
+    const row = (await rooms()).find(r => r.code === code);
+    assert.ok(row, '목록에 없음');
+    assert.strictEqual(row.spec, true); assert.strictEqual(row.watching, 0);
     tx(a, { t: 'cfg', priv: true });
     await waitFor(a, m => m.t === 'state' && m.cfg.priv === true);
-    assert.ok(!(await rooms()).some(r => r.code === code), '비공개인데 목록에 보임');
+    const list = await rooms();
+    assert.ok(!list.some(r => r.code === code), '비공개인데 코드가 목록에 있음');
+    assert.ok(list.some(r => r.priv && r.host === '방장' && !('code' in r)), '비공개 방이 목록에서 사라짐');
+    assert.ok(JSON.stringify(list).indexOf(code) < 0, '방 코드가 목록에 샘');
   });
 
   await check('시작하면 순서 주사위부터 — 남의 손패는 안 보인다', async () => {

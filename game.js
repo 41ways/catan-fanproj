@@ -26,6 +26,7 @@ const R = self.Rules, AI = self.AI, CK = self.CK, CKAI = self.CKAI;
 
 const MAX_PLAYERS = 4;
 const MIN_PLAYERS = 2;
+const MAX_SPECS = 10;                          // 방당 관전자
 const SKILLS = [0.4, 0.75, 1];                 // 쉬움 · 보통 · 어려움 — 화면의 고르기 칸과 같은 값
 // 테스트는 판을 빨리 돌려야 해서 CATAN_FAST=1 로 뜸을 들이지 않게 한다
 const FAST = typeof process !== 'undefined' && !!process.env && process.env.CATAN_FAST === '1';
@@ -122,7 +123,9 @@ function createRoom() {
     hostId: null,
     players: [],               // 자리 — 사람과 봇. 판이 시작되면 이 순서가 자리 순서(색)다
     nextId: 1,
-    cfg: { ext: false, skill: 0.75, priv: false },
+    cfg: { ext: false, skill: 0.75, priv: false, spec: true },   // spec — 시작했거나 만석인 방에 관전자로 들어오게 할지
+    specs: [],                 // 관전자 — players 와 별개. 턴 · 인원 · 봇 · 승패 · 방장 · 거래 상대에 절대 섞이지 않는다
+    nextSpec: 1,
     eng: R,                    // 이번 판의 엔진 — 시작할 때 cfg.ext 로 정한다
     state: null,               // 엔진의 판 상태. 대기실에서는 null. 밖으로는 절대 그대로 나가지 않는다
     feed: null,                // 화면 중계가 언제쯤 끝날지 어림한 것 (봇 페이싱)
@@ -143,7 +146,7 @@ function createRoom() {
 function uniqueName(room, name) {
   const base = name;
   let n = 2;
-  while (room.players.some(p => p.name === name)) name = base + n++;
+  while (room.players.some(p => p.name === name) || room.specs.some(p => p.name === name)) name = base + n++;
   return name;
 }
 
@@ -439,6 +442,24 @@ function send(ws, obj) {
   }
 }
 
+/** 좌석이 없는 관전자의 시야 — "모든 플레이어가 남"인 시야다. 엔진의 viewFor 에 없는 자리(null)를 넘기면
+ *  누구의 손패 · 진보(발전)카드 · 한 사람만 볼 기록 줄도 들어오지 않는다. 그래도 한 번 더 걸러서
+ *  엔진이 나중에 바뀌어도 당사자에게만 가던 값이 관전자에게 새지 않게 한다. */
+const OWN_ONLY = ['res', 'dev', 'cardList', 'craneReady', 'fleetPick'];
+function specView(room) {
+  const v = room.eng.viewFor(room.state, null);
+  v.me = null;
+  const open = v.ext !== 'ck' && v.phase === 'over';      // 기본판은 끝나야 승점 카드가 공개된다
+  for (const p of v.players) {
+    for (const k of OWN_ONLY) delete p[k];
+    if (v.ext !== 'ck' && !open) { delete p.vpFull; delete p.vpCards; }
+  }
+  v.log = v.log.filter(l => !l.mine);
+  return v;
+}
+
+const specNames = room => room.specs.map(s => s.name);
+
 function stateFor(room, me) {
   return {
     t: 'state',
@@ -450,17 +471,32 @@ function stateFor(room, me) {
     min: MIN_PLAYERS,
     now: Date.now(),
     you: me ? me.id : null,
+    role: 'player',
+    specs: specNames(room),    // 지켜보는 사람 이름들 — 참가자도 관전자도 서로 있는 줄 안다
     players: room.players.map(p => ({ id: p.id, name: p.name, bot: p.bot, connected: p.connected })),
     // 판 화면은 사람마다 다르다 — 엔진의 viewFor 가 남의 손패 종류 · 카드를 잘라 낸 것만 보낸다
     view: room.state && room.phase !== 'lobby' && me ? room.eng.viewFor(room.state, me.id) : null,
   };
 }
 
+/** 관전자에게 가는 상태. you 는 늘 null — 이 사람은 좌석이 없다. */
+function stateForSpec(room) {
+  const st = stateFor(room, null);
+  st.role = 'spec';
+  st.view = room.state && room.phase !== 'lobby' ? specView(room) : null;
+  return st;
+}
+
 function pushState(room) {
   for (const p of room.players) if (!p.bot) send(p.ws, stateFor(room, p));
+  if (room.specs.length) {
+    const st = stateForSpec(room);          // 한 번 만들어 모두에게 — 관전자는 다 같은 시야다
+    for (const sp of room.specs) send(sp.ws, st);
+  }
 }
 function broadcast(room, obj) {
   for (const p of room.players) if (!p.bot) send(p.ws, obj);
+  for (const sp of room.specs) send(sp.ws, obj);
 }
 const ev = (room, obj) => broadcast(room, Object.assign({ t: 'ev' }, obj));
 
@@ -479,7 +515,8 @@ function attach(room, p, ws) {
   if (!host || (!host.connected && host !== p)) room.hostId = p.id;
   ws.roomCode = room.code; ws.playerId = p.id;
   room.lastActive = Date.now();
-  send(ws, { t: 'welcome', you: p.id, token: p.token, code: room.code });
+  ws.specId = null;
+  send(ws, { t: 'welcome', you: p.id, token: p.token, code: room.code, role: 'player' });
   pushState(room);
   watchAbsent(room);             // 끊겼다 돌아왔으면 빼려던 예약을 거둔다
 }
@@ -489,36 +526,79 @@ function attach(room, p, ws) {
 function detach(ws) {
   const room = rooms.get(ws.roomCode);
   if (room) {
+    const sp = specOf(room, ws.specId);
+    if (sp && sp.ws === ws) {
+      removeSpec(room, sp);
+      pushState(room);
+    }
     const p = playerOf(room, ws.playerId);
     if (p && p.ws === ws) {
       if (room.phase === 'lobby') {
         removePlayer(room, p.id);
         if (!room.players.some(x => !x.bot)) dropRoom(room);   // 빈 방은 곧바로 치운다
-        else pushState(room);
+        else { seatSpectators(room); pushState(room); }
       } else disconnect(ws);
     }
   }
-  ws.roomCode = null; ws.playerId = null;
+  ws.roomCode = null; ws.playerId = null; ws.specId = null;
 }
 
 function dropRoom(room) {
   clearAll(room);
   clearTimeout(room.timers.host);
   for (const p of room.players) clearTimeout(p.leaveT);
+  // 관전자만 남은 방은 둘 까닭이 없다 — 소켓도 같이 닫는다. 화면은 이 알림을 받고 첫 화면으로 돌아간다.
+  for (const sp of room.specs.splice(0)) {
+    if (sp.ws) {
+      send(sp.ws, { t: 'err', msg: '방이 정리되어 관전이 끝났어요.', fatal: true });
+      sp.ws.roomCode = null; sp.ws.specId = null;
+      try { sp.ws.close(1000, 'room gone'); } catch (_) {}
+    }
+  }
   rooms.delete(room.code);
 }
 
-/** 열린 방 목록 — 코드를 몰라도 들어갈 수 있게. 시작 전이고 자리가 남았고 비공개가 아닌 방만. */
+/* ─────────────────────────── 관전자 ───────────────────────────
+   players 와 따로 둔다 — 자리 순서 · 인원수 · 봇 · 승패 · 방장 · 거래 상대 · 버리기 대상에 들어가지 않는다.
+   소켓이 끊기면 그냥 목록에서 뺀다(유예 · 토큰 재개 없음). 다음 판부터는 빈 자리에 들어온 순서대로 앉힌다. */
+
+const specOf = (room, id) => (id && room.specs.find(x => x.id === id)) || null;
+
+function removeSpec(room, sp) {
+  const i = room.specs.indexOf(sp);
+  if (i >= 0) room.specs.splice(i, 1);
+}
+
+function addSpec(room, ws, name) {
+  const sp = { id: 's' + room.nextSpec++, name: uniqueName(room, name || '이름없음'), ws };
+  room.specs.push(sp);
+  ws.roomCode = room.code; ws.playerId = null; ws.specId = sp.id;
+  send(ws, { t: 'welcome', you: sp.id, code: room.code, role: 'spec' });   // 토큰 없음 — 새로고침으로 이어받지 않는다
+  return sp;
+}
+
+/** 대기실에 빈 자리가 있으면 기다리던 관전자를 들어온 순서대로 앉힌다. 앉은 사람은 정식 입장(welcome · 토큰)을 받는다. */
+function seatSpectators(room) {
+  if (room.phase !== 'lobby') return;
+  while (room.specs.length && room.players.length < MAX_PLAYERS) {
+    const sp = room.specs.shift();
+    if (!sp.ws || sp.ws.readyState !== 1) continue;           // 그새 끊긴 사람
+    const p = addPlayer(room, { name: sp.name });
+    attach(room, p, sp.ws);                                    // welcome(role:'player') + 상태
+    ev(room, { kind: 'joined', by: p.id, name: p.name });
+  }
+}
+
+/** 열린 방 목록 — 코드를 몰라도 들어갈 수 있게.
+ *  비공개 방도 올라오지만 코드는 절대 싣지 않는다(priv:true) — 코드가 목록으로 새면 비공개가 무의미하다. */
 function roomList() {
   const list = [];
   const now = Date.now();
   for (const r of rooms.values()) {
-    if (r.cfg.priv) continue;
     if (!r.players.some(p => !p.bot && p.connected)) continue;
     const state = r.phase !== 'lobby' ? 'playing' : r.players.length >= MAX_PLAYERS ? 'full' : 'wait';
     const host = playerOf(r, r.hostId);
-    list.push({
-      code: r.code,
+    const item = {
       n: r.players.length,
       max: MAX_PLAYERS,
       bots: r.players.filter(p => p.bot).length,
@@ -526,9 +606,15 @@ function roomList() {
       host: host ? host.name : '',
       age: Math.round((now - r.madeAt) / 1000),
       state,
-    });
+      spec: !!r.cfg.spec,
+      watching: r.specs.length,
+    };
+    if (r.cfg.priv) item.priv = true; else item.code = r.code;
+    list.push(item);
   }
-  list.sort((a, b) => (a.state === 'wait' ? 0 : 1) - (b.state === 'wait' ? 0 : 1) || a.age - b.age);
+  // 들어갈 수 있는 공개 방(대기 중)이 맨 앞, 그다음 관전으로 들어갈 수 있는 공개 방, 나머지(비공개 · 관전 불가)
+  const rank = it => it.priv ? 2 : it.state === 'wait' ? 0 : it.spec ? 1 : 2;
+  list.sort((a, b) => rank(a) - rank(b) || a.age - b.age);
   return list.slice(0, 12);
 }
 
@@ -542,6 +628,7 @@ function handle(ws, msg) {
       const r = createRoom();
       if (msg.priv === true) r.cfg.priv = true;
       if (msg.ext === true) r.cfg.ext = true;
+      if (typeof msg.spec === 'boolean') r.cfg.spec = msg.spec;
       if (SKILLS.includes(msg.skill)) r.cfg.skill = msg.skill;
       const p = addPlayer(r, { name: clean(msg.name, 12) || '이름없음' });
       attach(r, p, ws);
@@ -551,8 +638,16 @@ function handle(ws, msg) {
       const code = clean(msg.code, 8).toUpperCase();
       const r = rooms.get(code);
       if (!r) return send(ws, { t: 'err', msg: '그런 방이 없습니다. 코드를 확인해 주세요.' });
-      if (r.phase !== 'lobby') return send(ws, { t: 'err', msg: '이미 시작된 방입니다.' });
-      if (r.players.length >= MAX_PLAYERS) return send(ws, { t: 'err', msg: '자리가 찼습니다.' });
+      // 대기실이고 자리가 남았으면 정식 참가. 아니면(시작했거나 만석) 관전을 허용한 방에 한해 관전자로 받는다.
+      if (r.phase !== 'lobby' || r.players.length >= MAX_PLAYERS) {
+        const why = r.phase !== 'lobby' ? '이미 시작된 방입니다.' : '자리가 찼습니다.';
+        if (!r.cfg.spec) return send(ws, { t: 'err', msg: why + ' 이 방은 관전을 허용하지 않아요.' });
+        if (r.specs.length >= MAX_SPECS) return send(ws, { t: 'err', msg: '관전석이 가득 찼어요.' });
+        const sp = addSpec(r, ws, clean(msg.name, 12) || '이름없음');
+        ev(r, { kind: 'watch', by: sp.id, name: sp.name });
+        pushState(r);
+        return;
+      }
       const p = addPlayer(r, { name: clean(msg.name, 12) || '이름없음' });
       attach(r, p, ws);
       ev(r, { kind: 'joined', by: p.id, name: p.name });
@@ -578,6 +673,8 @@ function handle(ws, msg) {
 
   const room = rooms.get(ws.roomCode);
   if (!room) return;
+  const spec = specOf(room, ws.specId);
+  if (spec && spec.ws === ws) return handleSpec(room, spec, ws, msg);   // 관전자 — 채팅과 나가기 말고는 전부 말없이 무시
   const me = playerOf(room, ws.playerId);
   if (!me) return;
   const isHost = room.hostId === me.id;
@@ -589,6 +686,7 @@ function handle(ws, msg) {
       if (SKILLS.includes(msg.skill)) room.cfg.skill = msg.skill;
       if (typeof msg.priv === 'boolean') room.cfg.priv = msg.priv;
       if (typeof msg.ext === 'boolean') room.cfg.ext = msg.ext;
+      if (typeof msg.spec === 'boolean') room.cfg.spec = msg.spec;
       pushState(room);
       break;
     }
@@ -612,6 +710,7 @@ function handle(ws, msg) {
         target.ws.roomCode = null; target.ws.playerId = null;
       }
       removePlayer(room, target.id);
+      seatSpectators(room);
       pushState(room);
       break;
     }
@@ -662,6 +761,7 @@ function handle(ws, msg) {
       room.state = null;
       // 판 중에 떠난 사람은 대기실 떠나기 예약이 없어 다음 판에 유령 자리로 남는다
       for (const p of room.players) if (!p.bot && !p.connected) armLeave(room, p);
+      seatSpectators(room);          // 다음 판부터 — 기다리던 관전자를 빈 자리에 앉힌다
       pushState(room);
       break;
     }
@@ -673,6 +773,7 @@ function handle(ws, msg) {
       send(ws, { t: 'left' });
       if (!room.players.some(p => !p.bot)) { dropRoom(room); break; }   // 봇만 남은 방은 둘 까닭이 없다
       ev(room, { kind: 'left', name });
+      seatSpectators(room);
       pushState(room);
       break;
     }
@@ -685,8 +786,31 @@ function armLeave(room, p) {
   p.leaveT = setTimeout(safeTimer(() => {
     if (p.connected || room.phase !== 'lobby' || rooms.get(room.code) !== room) return;
     removePlayer(room, p.id);
+    seatSpectators(room);
     pushState(room);
   }), LOBBY_GRACE);
+}
+
+/** 관전자가 보낸 메시지. 게임 행동(act)과 방 조작(cfg · start · kick …)은 조용히 무시한다. */
+function handleSpec(room, sp, ws, msg) {
+  switch (msg.t) {
+    case 'chat': {
+      const text = clean(msg.text, 200);
+      if (!text) return;
+      const now = Date.now();
+      if (now - (sp.lastChat || 0) < 350) return;
+      sp.lastChat = now;
+      broadcast(room, { t: 'chat', from: sp.id, name: sp.name, text, spec: true });
+      return;
+    }
+    case 'leave': {
+      removeSpec(room, sp);
+      ws.roomCode = null; ws.specId = null;
+      send(ws, { t: 'left' });
+      pushState(room);
+      return;
+    }
+  }
 }
 
 /** 소켓이 닫혔다. 그 사이 같은 자리가 새 소켓으로 다시 붙었으면(새로고침) 건드리지 않는다.
@@ -695,6 +819,13 @@ function armLeave(room, p) {
 function disconnect(ws, { keepSeat = false } = {}) {
   const room = rooms.get(ws.roomCode);
   if (!room) return;
+  const sp = specOf(room, ws.specId);
+  if (sp && sp.ws === ws) {              // 관전자는 유예 없이 바로 뺀다
+    removeSpec(room, sp);
+    ws.specId = null;
+    pushState(room);
+    return;
+  }
   const p = playerOf(room, ws.playerId);
   if (!p || p.ws !== ws) return;
   p.connected = false; p.ws = null;
@@ -743,11 +874,18 @@ function selfCheck() {
     const other = v.players.find(p => p.id === 'p2');
     if (other.res || other.dev || other.cardList) throw new Error('viewFor 가 남의 손패를 보여 줍니다');
     if ('devDeck' in v || 'progress' in v || 'seed' in v || 'rnd' in v) throw new Error('viewFor 가 더미나 씨앗을 보여 줍니다');
+    // 관전자 시야 — 좌석이 없으니 모두가 남이다
+    const room = { eng, state: s };
+    const sv = specView(room);
+    if (sv.me !== null) throw new Error('관전자 시야에 자리가 있습니다');
+    if (sv.players.some(p => OWN_ONLY.some(k => k in p) || (eng === R && ('vpCards' in p || 'vpFull' in p)))) throw new Error('관전자 시야가 손패를 보여 줍니다');
+    if (sv.log.some(l => l.mine)) throw new Error('관전자 시야가 개인 기록을 보여 줍니다');
+    if ('devDeck' in sv || 'progress' in sv || 'seed' in sv || 'rnd' in sv) throw new Error('관전자 시야가 더미나 씨앗을 보여 줍니다');
   }
   console.log(`  기본판 ${R.WIN_VP}점 · 도시와 기사 ${CK.WIN_VP}점 · 최대 ${MAX_PLAYERS}인`);
 }
 
 module.exports = {
   rooms, handle, disconnect, sweepRooms, selfCheck,
-  MAX_PLAYERS, LOBBY_GRACE, DC_GRACE, FAST, readTime,
+  MAX_PLAYERS, MAX_SPECS, LOBBY_GRACE, DC_GRACE, FAST, readTime,
 };

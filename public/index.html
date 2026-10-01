@@ -136,7 +136,8 @@
 
     <div class="block">
       <h2>온라인 (최대 4인)</h2>
-      <label class="check"><input type="checkbox" id="hostPriv"> 비공개 방 <span class="fine-in">— 열린 방 목록에 안 보이고 코드·링크로만 들어옵니다</span></label>
+      <label class="check"><input type="checkbox" id="hostPriv"> 비공개 방 <span class="fine-in">— 열린 방 목록에는 '비공개'로만 보이고 코드·링크로만 들어옵니다</span></label>
+      <label class="check"><input type="checkbox" id="hostSpec" checked> 관전 허용 <span class="fine-in">— 시작했거나 가득 찬 방에도 지켜보며 기다릴 수 있습니다</span></label>
       <button id="btnHost" class="primary">방 만들기</button>
       <div class="row">
         <input id="joinCode" class="grow code-in" maxlength="4" placeholder="방 코드" autocomplete="off">
@@ -170,9 +171,11 @@
           <option value="1">어려움</option>
         </select>
       </label>
-      <label class="check"><input type="checkbox" id="lobbyPriv"> 비공개 방 <span class="fine-in">— 열린 방 목록에 안 보입니다</span></label>
+      <label class="check"><input type="checkbox" id="lobbyPriv"> 비공개 방 <span class="fine-in">— 열린 방 목록에는 코드 없이 '비공개'로만 보입니다</span></label>
+      <label class="check"><input type="checkbox" id="lobbySpec"> 관전 허용 <span class="fine-in">— 시작했거나 가득 찬 방에 지켜보는 사람이 들어옵니다</span></label>
     </div>
     <p class="fine hidden" id="guestCfg"></p>
+    <p class="fine hidden" id="lobbySpecs"></p>
     <div class="row" id="hostControls">
       <button id="btnAddBot" class="grow">봇 추가</button>
       <button id="btnStart" class="primary grow">시작</button>
@@ -184,6 +187,7 @@
 <!-- 게임 -->
 <section id="game" class="screen hidden">
   <header class="top">
+    <div id="specBar" class="specBar hidden" role="status"><span id="specMsg"></span></div>
     <div id="players" class="players"></div>
     <div class="topRight">
       <div id="dice" class="dice hidden"><span class="die" id="die1"></span><span class="die" id="die2"></span><span class="dsum" id="dsum"></span></div>

@@ -30,15 +30,27 @@ const PRIVATE_LINE = /^(뽑은 카드 — |진보카드를 받았습니다 — |
 
 function leakCheck(ws, m) {
   checkedMsgs++;
-  const bad = why => LEAKS.push(`${ws.label || '?'} ← ${m.t}: ${why}`);
+  const found = findLeaks(m);
+  if (m.t === 'state' && m.view) checkedViews++;
+  for (const why of found) LEAKS.push(`${ws.label || '?'} ← ${m.t}: ${why}`);
+}
+
+/** 한 메시지에서 새는 것을 찾아 글로 돌려준다. 관전자(role:'spec')는 좌석이 없으니 모두가 "남" — 아무것도 새면 안 된다. */
+function findLeaks(m) {
+  const out = [];
+  const bad = why => out.push(why);
+  const spec = m.t === 'state' && m.role === 'spec';
+  if (m.t === 'welcome' && m.role === 'spec' && ('token' in m)) bad('관전자 입장 응답에 자리표가 있음');
   if (m.t === 'state') {
+    if (m.role !== 'player' && m.role !== 'spec') bad('role 이 없음');
+    if (spec && m.you !== null) bad('관전자에게 자리 번호가 감 ' + m.you);
+    if (!Array.isArray(m.specs)) bad('specs 목록이 없음');
     for (const p of m.players || []) {
       const extra = Object.keys(p).filter(k => ['id', 'name', 'bot', 'connected'].indexOf(k) < 0);
       if (extra.length) bad('자리 목록에 ' + extra.join(','));
     }
     const v = m.view;
-    if (!v) return;
-    checkedViews++;
+    if (!v) return out;
     if (v.me !== m.you) bad('다른 사람의 시야가 옴 ' + v.me + ' ≠ ' + m.you);
     (function walk(o, path) {
       if (!o || typeof o !== 'object') return;
@@ -57,6 +69,7 @@ function leakCheck(ws, m) {
       const ks = Object.keys(l).sort().join(',');
       if (ks !== 'i,mine,text') bad('기록 줄 모양이 ' + ks);
       if (PRIVATE_LINE.test(l.text) && !l.mine) bad('남의 비밀 기록 줄: ' + l.text);
+      if (spec && l.mine) bad('관전자에게 한 사람만 볼 기록 줄이 감: ' + l.text);
     }
   } else {
     const s = JSON.stringify(m);
@@ -64,6 +77,7 @@ function leakCheck(ws, m) {
       if (s.indexOf(k) >= 0) bad('판 정보가 ' + m.t + ' 에 섞임 ' + k);
     }
   }
+  return out;
 }
 
 /** 같은 방 사람들끼리 — 남이 보는 내 손패 장수가 내 손패와 맞는지 */
@@ -129,6 +143,37 @@ async function join(code, name) {
   const w = await waitFor(ws, m => m.t === 'welcome' || m.t === 'err', { what: '(참가)' });
   if (w.t === 'err') throw new Error('참가 거절: ' + w.msg);
   ws.me = w; return ws;
+}
+/** 관전자로 들어간다 — 첫 응답이 welcome(role:'spec') 이어야 한다 */
+async function watch(code, name) {
+  const ws = await open(name);
+  tx(ws, { t: 'join', code, name });
+  const w = await waitFor(ws, m => m.t === 'welcome' || m.t === 'err', { what: '(관전)' });
+  if (w.t === 'err') throw new Error('관전 거절: ' + w.msg);
+  ws.me = w; return ws;
+}
+/** 들어가려다 거절되는지 보려고 — 응답(welcome 이든 err 든)을 그대로 돌려준다 */
+async function tryJoin(code, name) {
+  const ws = await open(name);
+  tx(ws, { t: 'join', code, name });
+  const m = await waitFor(ws, x => x.t === 'welcome' || x.t === 'err', { what: '(들어가 보기)' });
+  return { ws, m };
+}
+/** 관전자 시야가 참가자 시야와 같은 판을 가리키는지 — 보드 · 단계 · 점수 · 손패 장수 */
+async function specCross(sp, players) {
+  await sleep(50);
+  const vs = lastView(sp);
+  assert.ok(vs && vs.me === null, '관전자 시야가 없거나 자리가 있음');
+  for (const c of players) {
+    const v = lastView(c);
+    assert.strictEqual(vs.phase, v.phase); assert.strictEqual(vs.turnCount, v.turnCount); assert.strictEqual(vs.robber, v.robber);
+    assert.deepStrictEqual(vs.board, v.board, '관전자가 보는 판이 다름');
+    for (const p of vs.players) {
+      const q = v.players.find(x => x.id === p.id);
+      assert.strictEqual(p.cards, q.cards, `${p.name} 손패 장수가 관전자와 다름`);
+      assert.strictEqual(p.vp, q.vp, `${p.name} 점수가 관전자와 다름`);
+    }
+  }
 }
 async function listRooms() {
   const ws = await open('목록');
@@ -282,20 +327,34 @@ async function scenarios() {
     assert.ok(!a.inbox.slice(k).some(m => m.t === 'state'), '방장 아닌 사람의 조작이 먹힘');
   });
 
-  await step('비공개 방은 열린 방 목록에 안 보인다', async () => {
+  await step('비공개 방도 열린 방 목록에 올라오지만 방 코드는 없다 (priv:true)', async () => {
     let list = await listRooms();
     const row = list.find(r => r.code === code);
     assert.ok(row, '공개 방이 목록에 없음');
     assert.strictEqual(row.ext, false);
+    assert.strictEqual(row.spec, true, '관전 허용이 기본');
+    assert.strictEqual(row.watching, 0);
+    assert.ok(!row.priv, '공개 방에 priv 가 붙음');
     const k = mark(a);
     tx(a, { t: 'cfg', priv: true });
     await waitFor(a, m => m.t === 'state' && m.cfg.priv === true, { from: k });
     list = await listRooms();
-    assert.ok(!list.some(r => r.code === code), '비공개로 바꿨는데 목록에 보임');
+    assert.ok(!list.some(r => r.code === code), '비공개로 바꿨는데 코드가 목록에 실려 있음');
+    const pr = list.find(r => r.priv && r.host === '방장');
+    assert.ok(pr, '비공개로 바꾼 방이 목록에서 사라짐');
+    assert.ok(!('code' in pr), '비공개 항목에 code 가 있음');
+    assert.ok(JSON.stringify(list).indexOf(code) < 0, '방 코드가 목록 어딘가에 새어 나감');
+    assert.deepStrictEqual(Object.keys(pr).sort(), ['age', 'bots', 'ext', 'host', 'max', 'n', 'priv', 'spec', 'state', 'watching']);
     const p = await create('숨은방', { priv: true });
     list = await listRooms();
-    assert.ok(!list.some(r => r.code === p.me.code), '비공개로 만든 방이 목록에 보임');
-    tx(p, { t: 'leave' }); await waitFor(p, m => m.t === 'left'); p.close();
+    assert.ok(!list.some(r => r.code === p.me.code), '비공개로 만든 방의 코드가 목록에 실림');
+    const pr2 = list.find(r => r.priv && r.host === '숨은방');
+    assert.ok(pr2 && pr2.state === 'wait' && !('code' in pr2), '비공개로 만든 방이 목록에 없거나 코드가 있음');
+    // 공개 대기방이 비공개보다 먼저 온다
+    const pub = await create('공개대기');
+    list = await listRooms();
+    assert.ok(list.findIndex(r => r.host === '공개대기') < list.findIndex(r => r.priv && r.host === '숨은방'), '정렬이 어긋남');
+    for (const x of [p, pub]) { tx(x, { t: 'leave' }); await waitFor(x, m => m.t === 'left'); x.close(); }
     tx(a, { t: 'cfg', priv: false });
     await waitFor(a, m => m.t === 'state' && m.cfg.priv === false);
   });
@@ -337,6 +396,67 @@ async function scenarios() {
     assert.strictEqual(sa.view.phase, 'order');
     assert.ok(meP(sa.view).res, '내 손패가 안 보임');
     assert.ok(!sa.view.players.find(p => p.id === idB).res, '남의 손패가 보임');
+  });
+
+  let sp;                                    // 이 방을 처음부터 끝까지 지켜보는 관전자 — 받는 메시지는 전부 누출 검사를 지난다
+  await step('시작한 방에 join 하면 관전자로 들어온다 — 시야에 숨은 정보가 없고, 참가자도 관전자를 안다', async () => {
+    const k = mark(a);
+    sp = await watch(code, '구경꾼');
+    assert.strictEqual(sp.me.role, 'spec');
+    assert.ok(!('token' in sp.me), '관전자에게 자리표가 감');
+    assert.strictEqual(sp.me.code, code);
+    const s = await waitFor(sp, m => m.t === 'state' && m.view);
+    assert.strictEqual(s.role, 'spec');
+    assert.strictEqual(s.you, null);
+    assert.strictEqual(s.view.me, null);
+    assert.strictEqual(s.players.length, 2, '관전자가 자리에 섞임');
+    assert.deepStrictEqual(s.specs, ['구경꾼']);
+    assert.strictEqual(s.phase, 'playing');
+    assert.strictEqual(s.view.phase, 'order');
+    for (const p of s.view.players) {
+      for (const key of ['res', 'dev', 'cardList', 'vpFull', 'vpCards']) assert.ok(!(key in p), `관전자 시야에 ${key}`);
+      assert.strictEqual(p.cards, 0 + p.cards);
+    }
+    assert.deepStrictEqual(s.view.legal, { settlements: [], cities: [], roads: [] }, '관전자에게 놓을 자리가 나옴');
+    const sa = await waitFor(a, m => m.t === 'state' && m.specs.length === 1, { from: k });
+    assert.deepStrictEqual(sa.specs, ['구경꾼']);
+    assert.strictEqual(sa.role, 'player');
+    assert.strictEqual(sa.players.length, 2);
+    assert.strictEqual(sa.hostId, idA);
+    await waitFor(a, m => m.t === 'ev' && m.kind === 'watch' && m.name === '구경꾼', { from: k });
+    const row = (await listRooms()).find(r => r.code === code);
+    assert.strictEqual(row.state, 'playing'); assert.strictEqual(row.watching, 1);
+  });
+
+  await step('관전자의 행동은 전부 말없이 무시된다 — 굴리기 · 놓기 · 설정 · 시작 · 내보내기 · 한 판 더', async () => {
+    const ka = mark(a), kb = mark(b), ks = mark(sp);
+    for (const msg of [
+      { t: 'act', action: 'rollForOrder', args: [] }, { t: 'act', action: 'placeSettlement', args: [0] },
+      { t: 'act', action: 'roll', args: [] }, { t: 'act', action: 'endTurn', args: [] },
+      { t: 'act', action: 'replyTrade', args: [true] }, { t: 'act', action: 'discard', args: [['b']] },
+      { t: 'cfg', ext: true, priv: true, spec: false, skill: 1 }, { t: 'start' }, { t: 'addBot' },
+      { t: 'kick', id: idB }, { t: 'again' },
+    ]) tx(sp, msg);
+    await sleep(120);
+    assert.ok(!a.inbox.slice(ka).some(m => m.t === 'state' || m.t === 'err'), '관전자의 행동이 방장에게 영향을 줌');
+    assert.ok(!b.inbox.slice(kb).some(m => m.t === 'state' || m.t === 'err'), '관전자의 행동이 참가자에게 영향을 줌');
+    assert.strictEqual(sp.inbox.slice(ks).length, 0, '관전자에게 응답이 감(조용히 무시해야 함)');
+    const c = lastState(a).cfg;
+    assert.deepStrictEqual([c.ext, c.priv, c.spec, c.skill], [false, false, true, 0.75]);
+    assert.strictEqual(lastView(a).phase, 'order');
+  });
+
+  await step('관전자도 채팅은 한다 — 이름으로 구분되고, 참가자의 말도 받는다', async () => {
+    tx(sp, { t: 'chat', text: '  구경 중  ' });
+    const c1 = await waitFor(a, m => m.t === 'chat' && m.name === '구경꾼');
+    assert.strictEqual(c1.text, '구경 중');
+    assert.strictEqual(c1.spec, true);
+    assert.strictEqual(c1.from, sp.me.you);
+    await waitFor(b, m => m.t === 'chat' && m.name === '구경꾼');
+    await waitFor(sp, m => m.t === 'chat' && m.name === '구경꾼');
+    tx(a, { t: 'chat', text: '안녕' });
+    const c2 = await waitFor(sp, m => m.t === 'chat' && m.name === '방장');
+    assert.ok(!c2.spec);
   });
 
   await step('남의 차례 · 없는 행동 · 이상한 인자는 거절한다', async () => {
@@ -443,9 +563,14 @@ async function scenarios() {
     let r = await act(plan.from, 'offerTrade', [{ [plan.give]: 1 }, { [plan.want]: 1 }]);
     assert.strictEqual(r.t, 'state', r.msg);
     await waitFor(plan.to, m => m.t === 'state' && m.view && m.view.trade);
+    // 거래 제안은 모두에게 공개 — 관전자도 본다
+    const st = await waitFor(sp, m => m.t === 'state' && m.view && m.view.trade && m.view.trade.from === plan.from.me.you, { what: '(관전자가 거래 제안을 봄)' });
+    assert.deepStrictEqual(st.view.trade.give, { [plan.give]: 1 });
+    assert.deepStrictEqual(st.view.trade.want, { [plan.want]: 1 });
     r = await act(plan.to, 'replyTrade', [true]);
     assert.strictEqual(r.t, 'state', r.msg);
     await waitFor(plan.from, m => m.t === 'state' && m.view && m.view.trade && m.view.trade.replies[plan.to.me.you] === 'yes');
+    await waitFor(sp, m => m.t === 'state' && m.view && m.view.trade && m.view.trade.replies[plan.to.me.you] === 'yes');
     r = await act(plan.to, 'acceptTrade', [plan.to.me.you]);
     assert.strictEqual(r.t, 'err', '제안자 아닌 사람이 성사시킴');
     r = await act(plan.from, 'acceptTrade', [plan.to.me.you]);
@@ -459,6 +584,9 @@ async function scenarios() {
     assert.strictEqual(at[plan.want], before.t[plan.want] - 1);
     assert.ok(vf.log.some(l => /거래 성사/.test(l.text)));
     crossCheck([a, b]);
+    const vsp = (await waitFor(sp, m => m.t === 'state' && m.view && !m.view.trade && m.view.lastTrade)).view;
+    assert.ok(vsp.log.some(l => /거래 성사/.test(l.text)), '관전자가 거래 성사를 못 봄');
+    await specCross(sp, [a, b]);
   });
 
   await step('7이 나오면 둘이 동시에 버리고, 굴린 사람이 도둑을 옮겨 한 장을 가져간다', async () => {
@@ -474,6 +602,8 @@ async function scenarios() {
     });
     assert.ok(both);
     const va = lastView(a), vb = lastView(b);
+    const vsd = (await waitFor(sp, m => m.t === 'state' && m.view && m.view.phase === 'discard', { what: '(관전자가 버리기 단계를 봄)' })).view;
+    assert.deepStrictEqual(vsd.mustDiscard, Object.assign({}, va.mustDiscard), '관전자가 보는 버릴 장수가 다름');
     const needA = va.mustDiscard[idA], needB = vb.mustDiscard[idB];
     const cardsA = R.handCount(meP(va)), cardsB = R.handCount(meP(vb));
     assert.strictEqual(needA, Math.floor(cardsA / 2));
@@ -505,6 +635,11 @@ async function scenarios() {
     assert.ok(!fresh(lastView(thief)).some(l => /^빼앗긴 것: /.test(l.text)), '훔친 사람이 뺏긴 사람 줄을 받음');
     assert.ok(!fresh(after.view).some(l => /^가져온 것: /.test(l.text)), '뺏긴 사람이 훔친 사람 줄을 받음');
     crossCheck([a, b]);
+    // 관전자는 도둑이 어디로 갔고 누가 누구에게서 가져갔는지만 안다 — 무슨 카드인지는 모른다
+    const vst = (await waitFor(sp, m => m.t === 'state' && m.view && m.view.robber === hex && m.view.lastSteal)).view;
+    assert.strictEqual(vst.lastSteal.thief, thief.me.you); assert.strictEqual(vst.lastSteal.victim, vid);
+    assert.ok(!vst.log.some(l => l.mine || /^(가져온|빼앗긴) 것: /.test(l.text)), '관전자가 훔친 카드 줄을 받음');
+    await specCross(sp, [a, b]);
   });
 
   await step('새로고침(resume)하면 같은 자리 · 같은 시야로 돌아오고 옛 탭은 4001', async () => {
@@ -527,15 +662,20 @@ async function scenarios() {
     b = b2;
   });
 
-  await step('틀린 자리표로는 돌아올 수 없고, 시작된 방에는 못 들어간다', async () => {
+  await step('틀린 자리표로는 돌아올 수 없고, 시작된 방에 늦게 join 하면 (관전 허용이라) 관전자가 된다', async () => {
     const x = await open('낯선이');
     tx(x, { t: 'resume', code, token: 'nope' });
     const e = await waitFor(x, m => m.t === 'err');
     assert.strictEqual(e.fatal, true);
+    const k = mark(a);
     tx(x, { t: 'join', code, name: '늦음' });
-    const e2 = await waitFor(x, m => m.t === 'err' && !m.fatal);
-    assert.strictEqual(e2.msg, '이미 시작된 방입니다.');
-    x.close();
+    const w = await waitFor(x, m => m.t === 'welcome' || (m.t === 'err' && !m.fatal));
+    assert.strictEqual(w.role, 'spec');
+    await waitFor(a, m => m.t === 'state' && m.specs.length === 2, { from: k });
+    assert.deepStrictEqual(lastState(a).players.map(p => p.name).sort(), ['민수', '방장'], '관전자가 자리에 섞임');
+    x.close();                                         // 소켓이 끊기면 관전자 목록에서 빠진다
+    const s = await waitFor(a, m => m.t === 'state' && m.specs.length === 1, { from: k });
+    assert.deepStrictEqual(s.specs, ['구경꾼']);
   });
 
   await step('방장이 끊기면 유예 뒤 남은 사람에게 넘어가고, 판은 이어진다', async () => {
@@ -559,13 +699,34 @@ async function scenarios() {
     await waitFor(b, m => m.t === 'ev' && m.kind === 'dropped');
   });
 
-  await step('끝난 뒤 방장이 한 판 더를 누르면 대기실로 돌아가고, 끊긴 자리는 비워진다', async () => {
-    const k = mark(b);
+  await step('끝난 뒤 방장이 한 판 더를 누르면 대기실로 돌아가고, 끊긴 자리는 비워지고, 기다리던 관전자가 빈 자리에 앉는다', async () => {
+    // 판이 끝났을 때 관전자도 결과를 본다
+    const over = (await waitFor(sp, m => m.t === 'state' && m.view && m.view.phase === 'over')).view;
+    assert.strictEqual(over.winner, idB);
+    assert.strictEqual(over.me, null);
+    const k = mark(b), ks = mark(sp);
     tx(b, { t: 'again' });
-    await waitFor(b, m => m.t === 'state' && m.phase === 'lobby', { from: k });
-    const s = await waitFor(b, m => m.t === 'state' && m.phase === 'lobby' && m.players.length === 1, { from: k, ms: 3000 });
+    // 앉은 관전자는 정식 입장 응답(welcome · 토큰)을 받아 클라이언트가 자리를 이어받는다
+    const w = await waitFor(sp, m => m.t === 'welcome', { from: ks, what: '(관전자가 앉음)' });
+    assert.strictEqual(w.role, 'player');
+    assert.ok(w.token && w.token.length >= 16);
+    assert.match(w.you, /^p\d+$/);
+    assert.strictEqual(w.code, code);
+    const sl = await waitFor(sp, m => m.t === 'state' && m.role === 'player' && m.phase === 'lobby', { from: ks });
+    assert.strictEqual(sl.you, w.you);
+    assert.strictEqual(sl.view, null);
+    assert.deepStrictEqual(sl.specs, []);
+    assert.ok(sl.players.some(p => p.id === w.you && p.name === '구경꾼'));
+    // 끊긴 방장 자리는 유예 뒤 비워진다 — 남는 것은 방장 b 와 새로 앉은 구경꾼
+    const s = await waitFor(b, m => m.t === 'state' && m.phase === 'lobby' && m.players.length === 2 && !m.players.some(p => p.id === idA),
+      { from: k, ms: 3000 });
     assert.strictEqual(s.view, null);
+    assert.strictEqual(s.hostId, idB);
+    assert.deepStrictEqual(s.players.map(p => p.name).sort(), ['구경꾼', '민수']);
+    // 새로 앉은 사람은 토큰으로 이어받을 수 있다
+    sp.me = Object.assign({}, sp.me, w);
     tx(b, { t: 'leave' }); await waitFor(b, m => m.t === 'left'); b.close();
+    tx(sp, { t: 'leave' }); await waitFor(sp, m => m.t === 'left'); sp.close();
   });
 
   /* ── 셋이 하는 판 — 여러 사람이 동시에 끼는 거래 ── */
@@ -720,8 +881,14 @@ async function scenarios() {
     await waitFor(h1, m => m.t === 'state' && m.players.length === 4);
     tx(h1, { t: 'addBot' });                    // 다섯 번째는 거절
     await waitFor(h1, m => m.t === 'err' && /자리/.test(m.msg));
+    // 만석 대기실에서 관전자로 기다리다가 판이 시작되면 처음부터 끝까지 지켜본다
+    const wsp = await watch(h1.me.code, ext ? '확장구경' : '기본구경');
+    assert.strictEqual(wsp.me.role, 'spec');
     tx(h1, { t: 'start' });
     await waitFor(h1, m => m.t === 'state' && m.phase === 'playing');
+    const first = await waitFor(wsp, m => m.t === 'state' && m.view && m.view.phase === 'order');
+    assert.strictEqual(first.view.me, null);
+    assert.strictEqual(first.role, 'spec');
     let moves = 0;
     await drive([h1], {
       until: vs => { moves++; return vs[0].phase === 'over'; },
@@ -737,11 +904,231 @@ async function scenarios() {
     assert.ok(!v.players.some(p => p.out), '봇이 막혀서 빠짐');
     console.log(`      ${v.turnCount}번째 차례 · 승자 ${w.name} ` + v.players.map(p => `${p.name} ${p.vpFull != null ? p.vpFull : p.vp}`).join(' / ') +
       ` (최고 ${top.name})`);
-    h1.close();
+    // 관전자도 같은 끝을 본다 — 승자 · 점수 · 손패 장수. 끝난 뒤 기본판은 승점 카드까지 공개된다.
+    await specCross(wsp, [h1]);
+    const sv = lastView(wsp);
+    assert.strictEqual(sv.phase, 'over'); assert.strictEqual(sv.winner, v.winner);
+    assert.ok(sv.log.length > 0 && sv.log.every(l => !l.mine));
+    if (!ext) assert.ok(sv.players.every(p => p.vpFull !== undefined), '끝난 기본판은 모두의 점수가 공개');
+    assert.ok(sv.players.every(p => !('res' in p) && !('dev' in p) && !('cardList' in p)), '관전자가 끝난 뒤에도 손패를 받음');
+    // 판이 끝나 대기실로 돌아와도 만석이면 관전자는 계속 관전자다. 자리가 나면 앉는다.
+    const kw = mark(wsp);
+    tx(h1, { t: 'again' });
+    const sl = await waitFor(wsp, m => m.t === 'state' && m.phase === 'lobby', { from: kw });
+    assert.strictEqual(sl.role, 'spec'); assert.strictEqual(sl.view, null); assert.strictEqual(sl.players.length, 4);
+    assert.ok(!wsp.inbox.slice(kw).some(m => m.t === 'welcome'), '만석인데 관전자가 앉음');
+    const bot = sl.players.find(p => p.bot);
+    tx(h1, { t: 'kick', id: bot.id });
+    const wl = await waitFor(wsp, m => m.t === 'welcome', { from: kw, what: '(자리가 나서 앉음)' });
+    assert.strictEqual(wl.role, 'player'); assert.ok(wl.token);
+    h1.close(); wsp.close();
   }
 
   await step('사람 하나 + 봇 셋으로 기본판 한 판을 끝까지 둔다', () => soloVsBots(false));
   await step('사람 하나 + 봇 셋으로 도시와 기사 한 판을 끝까지 둔다', () => soloVsBots(true));
+
+  await step('도시와 기사 — 관전자가 거래 · 7 버리기 · 도둑을 처음부터 지켜본다', async () => {
+    const x = await create('확장장', { ext: true });
+    const y = await join(x.me.code, '확장둘');
+    await waitFor(x, m => m.t === 'state' && m.players.length === 2);
+    tx(x, { t: 'start' });
+    await waitFor(y, m => m.t === 'state' && m.phase === 'playing');
+    const wsp = await watch(x.me.code, '기사구경');
+    const all = [x, y];
+    const first = await waitFor(wsp, m => m.t === 'state' && m.view);
+    assert.strictEqual(first.view.ext, 'ck');
+    assert.strictEqual(first.view.me, null);
+    assert.ok(first.view.players.every(p => !('cardList' in p) && !('res' in p) && !('craneReady' in p) && !('fleetPick' in p)), '확장판 관전자 시야에 비공개 값');
+    await drive(all, { until: vs => vs.every(v => v.phase === 'roll' || v.phase === 'main'), what: '(확장 준비)' });
+    await specCross(wsp, all);
+    // 사람끼리 거래 — 관전자는 제안과 결과를 본다
+    await drive(all, hoardUntilTrade(all));
+    const plan = tradePlan(all);
+    let r = await act(plan.from, 'offerTrade', [{ [plan.give]: 1 }, { [plan.want]: 1 }]);
+    assert.strictEqual(r.t, 'state', r.msg);
+    const st = await waitFor(wsp, m => m.t === 'state' && m.view && m.view.trade && m.view.trade.from === plan.from.me.you, { what: '(확장 관전자가 제안을 봄)' });
+    assert.deepStrictEqual(st.view.trade.give, { [plan.give]: 1 });
+    r = await act(plan.to, 'replyTrade', [true]);
+    assert.strictEqual(r.t, 'state', r.msg);
+    r = await act(plan.from, 'acceptTrade', [plan.to.me.you]);
+    assert.strictEqual(r.t, 'state', r.msg);
+    const done = (await waitFor(wsp, m => m.t === 'state' && m.view && !m.view.trade && m.view.lastTrade)).view;
+    assert.ok(done.log.some(l => /거래 성사/.test(l.text)));
+    await specCross(wsp, all);
+    // 7 — 손패를 쌓다가 버리기 단계가 오면 관전자도 같은 단계를 본다
+    let sawDiscard = false;
+    try {
+      await drive(all, {
+        mode: 'hoard', max: 30000, what: '(확장 7 기다리기)',
+        until: vs => vs[0].phase === 'discard' || vs[0].phase === 'over',
+      });
+      sawDiscard = lastView(x).phase === 'discard';
+    } catch (e) { /* 7 이 안 나오는 판 — 아래에서 시야만 검사한다 */ }
+    if (sawDiscard) {
+      const vd = (await waitFor(wsp, m => m.t === 'state' && m.view && m.view.phase === 'discard', { what: '(확장 관전자가 버리기를 봄)' })).view;
+      assert.deepStrictEqual(Object.keys(vd.mustDiscard).sort(), Object.keys(lastView(x).mustDiscard).sort());
+      await drive(all, { mode: 'hoard', max: 2000, until: vs => vs[0].phase === 'robber' || vs[0].phase === 'main' || vs[0].phase === 'over', what: '(확장 버림)' });
+      if (lastView(x).phase === 'robber') {
+        const v = lastView(x);
+        const thief = v.players[v.turn].id === x.me.you ? x : y;
+        const mv = robberMove(lastView(thief));
+        r = await act(thief, mv[0], mv[1]);
+        assert.strictEqual(r.t, 'state', r.msg);
+        await waitFor(wsp, m => m.t === 'state' && m.view && m.view.robber === mv[1][0]);
+      }
+    }
+    await drive(all, { until: vs => vs.every(v => v.turnCount >= 8) || vs[0].phase === 'over', max: 6000, what: '(확장 몇 차례 더)' });
+    await specCross(wsp, all);
+    console.log(`      (확장판 관전: ${lastView(wsp).turnCount}번째 차례까지${sawDiscard ? ' · 7 버리기 포함' : ''})`);
+    x.close(); y.close(); wsp.close();
+  });
+
+  await step('꽉 찬 대기실에 join 하면 관전자가 되고, 자리가 나면 들어온 순서대로 앉는다 · 방 목록에 spec/watching', async () => {
+    const h = await create('만석장');
+    for (let i = 0; i < 3; i++) tx(h, { t: 'addBot' });
+    await waitFor(h, m => m.t === 'state' && m.players.length === 4);
+    const s1 = await watch(h.me.code, '첫째구경');
+    const s2 = await watch(h.me.code, '둘째구경');
+    assert.strictEqual(s1.me.role, 'spec');
+    const st = await waitFor(s2, m => m.t === 'state' && m.phase === 'lobby' && m.specs.length === 2);
+    assert.strictEqual(st.role, 'spec'); assert.strictEqual(st.you, null); assert.strictEqual(st.view, null);
+    assert.strictEqual(st.players.length, 4);
+    assert.deepStrictEqual(st.specs, ['첫째구경', '둘째구경']);
+    const row = (await listRooms()).find(r => r.code === h.me.code);
+    assert.strictEqual(row.state, 'full'); assert.strictEqual(row.spec, true); assert.strictEqual(row.watching, 2);
+    // 관전자는 방을 만지지 못한다
+    const k0 = mark(h);
+    tx(s1, { t: 'start' }); tx(s1, { t: 'addBot' }); tx(s1, { t: 'kick', id: st.players.find(p => p.bot).id });
+    await sleep(80);
+    assert.ok(!h.inbox.slice(k0).some(m => m.t === 'state'), '관전자가 대기실을 건드림');
+    // 봇 하나를 내보내면 먼저 들어온 첫째가 앉는다
+    const k1 = mark(s1), k2 = mark(s2);
+    tx(h, { t: 'kick', id: st.players.find(p => p.bot).id });
+    const w = await waitFor(s1, m => m.t === 'welcome', { from: k1, what: '(첫째가 앉음)' });
+    assert.strictEqual(w.role, 'player'); assert.ok(w.token);
+    const ns = await waitFor(s1, m => m.t === 'state' && m.role === 'player' && m.you === w.you, { from: k1 });
+    assert.strictEqual(ns.players.length, 4);
+    assert.deepStrictEqual(ns.specs, ['둘째구경']);
+    const s2s = await waitFor(s2, m => m.t === 'state' && m.specs.length === 1, { from: k2 });
+    assert.strictEqual(s2s.role, 'spec');
+    assert.ok(!s2.inbox.slice(k2).some(m => m.t === 'welcome'), '둘째까지 앉음');
+    // 둘째는 시작한 방의 관전자로 남는다
+    tx(h, { t: 'start' });
+    const pv = await waitFor(s2, m => m.t === 'state' && m.view && m.view.phase === 'order', { from: k2 });
+    assert.strictEqual(pv.role, 'spec'); assert.strictEqual(pv.view.me, null);
+    const row2 = (await listRooms()).find(r => r.code === h.me.code);
+    assert.strictEqual(row2.state, 'playing'); assert.strictEqual(row2.watching, 1);
+    for (const c of [h, s1, s2]) c.close();
+  });
+
+  await step('관전 불허 방(spec:false)은 시작한 방 · 만석 대기실 모두 기존 문구로 거절하고, 설정은 대기실에서 방장만 바꾼다', async () => {
+    const h = await create('닫힌방', { spec: false });
+    assert.strictEqual((await waitFor(h, m => m.t === 'state')).cfg.spec, false);
+    for (let i = 0; i < 3; i++) tx(h, { t: 'addBot' });
+    await waitFor(h, m => m.t === 'state' && m.players.length === 4);
+    let r = await tryJoin(h.me.code, '기웃1');
+    assert.strictEqual(r.m.t, 'err');
+    assert.ok(r.m.msg.startsWith('자리가 찼습니다.'), r.m.msg);
+    assert.match(r.m.msg, /관전을 허용하지 않아요/);
+    r.ws.close();
+    const row = (await listRooms()).find(x => x.code === h.me.code);
+    assert.strictEqual(row.spec, false); assert.strictEqual(row.state, 'full'); assert.strictEqual(row.watching, 0);
+    tx(h, { t: 'start' });
+    await waitFor(h, m => m.t === 'state' && m.phase === 'playing');
+    r = await tryJoin(h.me.code, '기웃2');
+    assert.strictEqual(r.m.t, 'err');
+    assert.ok(r.m.msg.startsWith('이미 시작된 방입니다.'), r.m.msg);
+    r.ws.close();
+    assert.deepStrictEqual(lastState(h).specs, []);
+    // 판 중에는 설정을 못 바꾼다
+    const k = mark(h);
+    tx(h, { t: 'cfg', spec: true });
+    await sleep(80);
+    assert.ok(!h.inbox.slice(k).some(m => m.t === 'state'));
+    assert.strictEqual(lastState(h).cfg.spec, false);
+    h.close();
+
+    // 대기실에서는 방장만, 불리언만
+    const g = await create('설정방');
+    const g2 = await join(g.me.code, '손님');
+    await waitFor(g, m => m.t === 'state' && m.players.length === 2);
+    assert.strictEqual(lastState(g).cfg.spec, true, '기본값이 관전 허용이 아님');
+    tx(g2, { t: 'cfg', spec: false }); tx(g, { t: 'cfg', spec: 'no' });
+    await sleep(80);
+    assert.strictEqual(lastState(g).cfg.spec, true);
+    tx(g, { t: 'cfg', spec: false });
+    await waitFor(g, m => m.t === 'state' && m.cfg.spec === false);
+    await waitFor(g2, m => m.t === 'state' && m.cfg.spec === false);
+    tx(g, { t: 'cfg', spec: true });
+    await waitFor(g, m => m.t === 'state' && m.cfg.spec === true);
+    g.close(); g2.close();
+  });
+
+  await step('방당 관전자는 10명까지 — 11번째는 "관전석이 가득 찼어요."', async () => {
+    const h = await create('북적방');
+    for (let i = 0; i < 2; i++) tx(h, { t: 'addBot' });
+    await waitFor(h, m => m.t === 'state' && m.players.length === 3);
+    tx(h, { t: 'start' });
+    await waitFor(h, m => m.t === 'state' && m.phase === 'playing');
+    const crowd = [];
+    for (let i = 0; i < 10; i++) crowd.push(await watch(h.me.code, '구경' + i));
+    const s = await waitFor(h, m => m.t === 'state' && m.specs.length === 10);
+    assert.strictEqual(s.players.length, 3);
+    assert.strictEqual(new Set(s.specs).size, 10);
+    const r = await tryJoin(h.me.code, '열한째');
+    assert.strictEqual(r.m.t, 'err');
+    assert.strictEqual(r.m.msg, '관전석이 가득 찼어요.');
+    r.ws.close();
+    assert.strictEqual((await listRooms()).find(x => x.code === h.me.code).watching, 10);
+    // 한 명이 나가면 다시 들어올 수 있다
+    tx(crowd[0], { t: 'leave' }); await waitFor(crowd[0], m => m.t === 'left');
+    const again = await watch(h.me.code, '열한째');
+    assert.strictEqual(again.me.role, 'spec');
+    // 사람이 다 떠나 방이 정리되면 관전자 소켓도 같이 닫힌다
+    const k = mark(crowd[1]);
+    tx(h, { t: 'leave' }); await waitFor(h, m => m.t === 'left');
+    const e = await waitFor(crowd[1], m => m.t === 'err' && m.fatal, { from: k, what: '(방이 정리되어 관전자에게 알림)' });
+    assert.match(e.msg, /관전/);
+    const end = Date.now() + 2000;
+    while (crowd[1].closed == null && Date.now() < end) await sleep(10);
+    assert.notStrictEqual(crowd[1].closed, null, '방이 사라졌는데 관전자 소켓이 열려 있음');
+    h.close(); crowd.forEach(c => c.close()); again.close();
+  });
+
+  await step('누출 검사기는 관전자 시야도 잡아낸다 — 일부러 샌 시야는 실패하고 깨끗한 시야는 통과한다', async () => {
+    const mk = async ext => {
+      const x = await create('검사' + (ext ? 'ck' : 'base'), { ext });
+      const y = await join(x.me.code, '검사둘');
+      await waitFor(x, m => m.t === 'state' && m.players.length === 2);
+      tx(x, { t: 'start' });
+      const w = await watch(x.me.code, '검사구경');
+      await drive([x, y], { until: vs => vs.every(v => v.phase === 'roll' || v.phase === 'main'), what: '(검사 준비)' });
+      await sleep(50);
+      const st = JSON.parse(JSON.stringify(lastState(w)));
+      const own = JSON.parse(JSON.stringify(lastView(x)));
+      [x, y, w].forEach(c => c.close());
+      return { st, own };
+    };
+    for (const ext of [false, true]) {
+      const { st, own } = await mk(ext);
+      assert.strictEqual(st.role, 'spec');
+      assert.deepStrictEqual(findLeaks(st), [], '깨끗한 관전자 시야가 걸림');
+      const bad = f => { const c = JSON.parse(JSON.stringify(st)); f(c); return findLeaks(c).length; };
+      const me = own.players.find(p => p.id === own.me);
+      assert.ok(bad(c => { c.view.players[0].res = me.res; }) > 0, '관전자 시야의 손패(res)를 못 잡음');
+      assert.ok(bad(c => { c.view.players[1].cardList = [{ type: 'x', track: 'y' }]; }) > 0, '관전자 시야의 진보카드를 못 잡음');
+      assert.ok(bad(c => { c.view.players[0].dev = [{ type: 'knight' }]; }) > 0, '관전자 시야의 발전카드를 못 잡음');
+      assert.ok(bad(c => { c.view.me = own.me; }) > 0, '관전자 시야에 자리가 생겨도 못 잡음');
+      assert.ok(bad(c => { c.you = own.me; c.view.me = own.me; }) > 0, '관전자에게 자리 번호가 가도 못 잡음');
+      assert.ok(bad(c => { c.view.log.push({ i: 99999, mine: true, text: '가져온 것: 벽돌' }); }) > 0, '관전자 시야의 개인 기록 줄을 못 잡음');
+      assert.ok(bad(c => { c.view.log.push({ i: 99999, mine: false, text: '빼앗긴 것: 벽돌' }); }) > 0, '남의 비밀 줄을 못 잡음');
+      assert.ok(bad(c => { c.view.seed = 1; }) > 0, '씨앗을 못 잡음');
+      if (!ext) assert.ok(bad(c => { c.view.players[0].vpFull = 9; }) > 0, '기본판 숨은 승점을 못 잡음');
+      assert.ok(bad(c => { delete c.specs; }) > 0, 'specs 누락을 못 잡음');
+      assert.ok(bad(c => { delete c.role; }) > 0, 'role 누락을 못 잡음');
+      assert.ok(findLeaks({ t: 'welcome', role: 'spec', you: 's1', code: 'ABCD', token: 'x' }).length > 0, '관전자에게 간 토큰을 못 잡음');
+    }
+  });
 
   await step('ping 은 아무 일도 일으키지 않는다 · 빈 메시지는 무시한다', async () => {
     const x = await open('핑');

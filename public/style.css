@@ -1914,3 +1914,17 @@ button.flash { animation: flashBtn .8s ease-in-out 2; }
 @keyframes flashBtn { 50% { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(180,118,31,0.35); } }
 @media (prefers-reduced-motion: reduce) { button.flash { animation: none; border-color: var(--gold); } }
 #title.curtain .rooms    { animation: tFadeUp 0.4s ease 1.74s backwards; }
+
+/* ---------------- 관전 ----------------
+   관전자는 판과 모두의 공개 정보만 본다. 손패 · 짓기 · 거래 단추는 만들지 않고, 위쪽에 안내 띠를 둔다.
+   띠는 머리줄(.top) 안에서 한 줄을 통째로 차지한다 — 판 화면의 격자 행을 늘리지 않는다. */
+.specBar {
+  flex: 1 0 100%; order: -1; margin: 0 0 2px;
+  padding: 5px 10px; border-radius: 8px; font-size: 12.5px; line-height: 1.45;
+  background: var(--panel); border: 1px solid var(--gold); color: var(--ink);
+}
+#game.spec .top { flex-wrap: wrap; }
+#game.spec .hand { display: none; }
+.room-row .rt { text-align: right; white-space: normal; max-width: 46%; line-height: 1.3; }
+.room-row.priv .rc { letter-spacing: .02em; color: var(--faint); font-size: 12px; }
+#lobbySpecs { word-break: keep-all; }
