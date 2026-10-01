@@ -1887,6 +1887,7 @@ html, body { overflow-x: hidden; }
   padding: 9px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: none;
 }
 .room-row:hover:not(:disabled) { border-color: var(--gold); }
+.room-row.off, .room-row:disabled { opacity: .55; cursor: default; }
 .room-row .rc { font-weight: 800; letter-spacing: .18em; color: var(--gold); font-size: 13px; }
 .room-row .rn { flex: 1; min-width: 0; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-row .rt { font-size: 11px; color: var(--faint); white-space: nowrap; }

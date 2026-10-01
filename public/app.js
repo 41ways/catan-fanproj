@@ -3813,24 +3813,27 @@
     askRooms();
     roomsT = setInterval(function () { if (!document.hidden) askRooms(); }, 6000);
   }
+  var ROOM_STATE = { wait: '', full: '가득 참', playing: '게임 중' };
   function paintRooms() {
     var box = $('roomsList');
-    $('roomsN').textContent = roomList.length ? roomList.length + '곳' : '';
+    var open = roomList.filter(function (r) { return r.state === 'wait'; }).length;
+    $('roomsN').textContent = roomList.length ? open + '곳' : '';
     if (!roomList.length) {
       box.innerHTML = '<p class="rooms-none">지금은 기다리는 방이 없습니다 — 방을 만들어 링크를 보내 보세요.</p>';
       return;
     }
     box.innerHTML = roomList.map(function (r) {
-      return '<button class="room-row" data-code="' + esc(r.code) + '">' +
+      var off = r.state !== 'wait';
+      return '<button class="room-row' + (off ? ' off' : '') + '" data-code="' + esc(r.code) + '"' + (off ? ' disabled' : '') + '>' +
         '<span class="rc">' + esc(r.code) + '</span>' +
         '<span class="rn">' + esc(r.host || '누군가') + ' 님 방 · ' + (r.ext ? '도시와 기사' : '기본판') + ' · ' +
         r.n + '/' + r.max + (r.bots ? ' (봇 ' + r.bots + ')' : '') + '</span>' +
-        '<span class="rt">' + (r.age < 60 ? '방금' : Math.floor(r.age / 60) + '분 전') + '</span></button>';
+        '<span class="rt">' + (off ? ROOM_STATE[r.state] : (r.age < 60 ? '방금' : Math.floor(r.age / 60) + '분 전')) + '</span></button>';
     }).join('');
   }
   $('roomsList').addEventListener('click', function (e) {
     var row = e.target.closest('[data-code]');
-    if (!row) return;
+    if (!row || row.disabled) return;
     // 이름은 고르는 화면에서 정한다 — 코드를 채워 두고 그리로 보낸다
     $('joinCode').value = row.dataset.code;
     show('home');

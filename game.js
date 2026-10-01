@@ -513,8 +513,9 @@ function roomList() {
   const list = [];
   const now = Date.now();
   for (const r of rooms.values()) {
-    if (r.phase !== 'lobby' || r.cfg.priv || r.players.length >= MAX_PLAYERS) continue;
+    if (r.cfg.priv) continue;
     if (!r.players.some(p => !p.bot && p.connected)) continue;
+    const state = r.phase !== 'lobby' ? 'playing' : r.players.length >= MAX_PLAYERS ? 'full' : 'wait';
     const host = playerOf(r, r.hostId);
     list.push({
       code: r.code,
@@ -524,9 +525,10 @@ function roomList() {
       ext: !!r.cfg.ext,
       host: host ? host.name : '',
       age: Math.round((now - r.madeAt) / 1000),
+      state,
     });
   }
-  list.sort((a, b) => a.age - b.age);
+  list.sort((a, b) => (a.state === 'wait' ? 0 : 1) - (b.state === 'wait' ? 0 : 1) || a.age - b.age);
   return list.slice(0, 12);
 }
 
