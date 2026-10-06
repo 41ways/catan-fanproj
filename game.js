@@ -511,8 +511,11 @@ function attach(room, p, ws) {
   clearTimeout(p.leaveT);
   p.ws = ws; p.connected = true;
   // 방장이 자리를 비운 채면(모두 끊겼다 이 사람이 먼저 돌아온 경우 등) 돌아온 사람이 방장을 맡는다
+  // 다른 사람이 이미 붙어 있으면(방장 말고) 아직 방장의 유예가 남아 있으므로 넘겨받지 않는다 —
+  // 안 그러면 방장이 잠깐 끊긴 사이 다른 사람이 들어오거나 새로고침만 해도 방장을 빼앗아 간다.
   const host = playerOf(room, room.hostId);
-  if (!host || (!host.connected && host !== p)) room.hostId = p.id;
+  const noOtherHost = !room.players.some(x => !x.bot && x.connected && x.id !== p.id);
+  if (!host || host === p || (!host.connected && noOtherHost)) room.hostId = p.id;
   ws.roomCode = room.code; ws.playerId = p.id;
   room.lastActive = Date.now();
   ws.specId = null;
