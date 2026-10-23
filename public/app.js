@@ -4180,7 +4180,7 @@
   }
   document.addEventListener('visibilitychange', chatBack);
   window.addEventListener('focus', chatBack);
-  /** 사람이 나 말고 또 있을 때만 채팅을 내놓는다 */
+  /** 온라인 방에 들어가 있으면 채팅을 내놓는다 */
   function syncChatVisible(list) {
     var seats = list || App.seats || [];
     var humans = 0;
@@ -4188,10 +4188,10 @@
     // 관전자도 말은 한다 — 지켜보는 사람이 있으면 사람이 하나뿐인 방에서도 채팅이 의미가 있다
     var watchers = Room && Room.specs ? Room.specs.length : 0;
     humans += watchers;
-    var on = App.mode === 'online' && humans > 1;
+    var on = App.mode === 'online';                 // 봇만 있는 방에서도 채팅 (전 게임 공통)
     $('chatBtn').hidden = !on;
     if (!on) { $('chat').hidden = true; chatPeekOff(); }
-    else $('chatWho').textContent = humans + '명';
+    else $('chatWho').textContent = humans > 1 ? humans + '명' : '지금은 나 혼자 — 초대 링크로 불러 보세요';
   }
   // 판 위 단추다 — 누를 때 판 끌기·확대가 같이 잡히지 않게 막는다
   ['chatBtn', 'chatPeek'].forEach(function (id) {
